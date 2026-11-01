@@ -1,0 +1,45 @@
+[Unit]
+Description=Gemma 4 on llama.cpp (OpenAI-compatible API + web UI)
+Documentation=https://github.com/ggml-org/llama.cpp/tree/master/tools/server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llm
+Group=llm
+EnvironmentFile=/etc/pi-llm/server.env
+# llama-server runs in "router" mode: it lists the models from models.ini,
+# loads them on demand and forwards each request to the right one.
+ExecStart=/opt/pi-llm/llama.cpp/build/bin/llama-server \
+    --models-preset /etc/pi-llm/models.ini \
+    --models-max 1 \
+    --host ${LLM_HOST} \
+    --port ${LLM_PORT} \
+    --api-key-file /etc/pi-llm/api-keys \
+    $LLM_EXTRA_ARGS
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Writable dirs for the service (prompt cache, HF cache if you use -hf)
+StateDirectory=pi-llm
+CacheDirectory=pi-llm
+WorkingDirectory=/var/lib/pi-llm
+Environment=LLAMA_CACHE=/var/cache/pi-llm
+
+# Hardening: the server only needs to read its binary, config and models
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
