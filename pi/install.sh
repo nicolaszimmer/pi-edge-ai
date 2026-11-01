@@ -123,7 +123,7 @@ $(printf '\033[1;32m')All set!$(printf '\033[0m')
   OpenAI-compatible API base URL:        http://$host.local:$port/v1
   API key:                               $key
 
-  Models:   $(awk -F'[][]' '/^\[/ && $2 != "*" { print $2 }' "$rendered" | paste -sd' ')
+  Models:   $(awk -F'[][]' '/^\[/ && $2 != "*" { print $2 }' "$CONF/models.ini" | paste -sd' ')
   Config:   $CONF/models.ini, $CONF/server.env, $CONF/api-keys
   Logs:     journalctl -u pi-llm -f
   Status:   $HERE/status.sh

@@ -290,6 +290,10 @@ class TextExtractor(HTMLParser):
     BLOCK = {"p", "div", "section", "article", "main", "header", "ul", "ol", "table", "tr",
              "blockquote", "pre", "br", "hr", "dl", "dt", "dd", "figcaption", "td", "th"}
     HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 4, "h6": 4}
+    # elements without an end tag: never start a skipped region with one
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+            "source", "track", "wbr"}
+    PRE_START, PRE_END = "\x02", "\x03"   # marks <pre> text, so tidy() keeps its indentation
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -304,11 +308,13 @@ class TextExtractor(HTMLParser):
         self.main_text = []
 
     def is_boilerplate(self, tag, attrs):
+        if tag in self.VOID:
+            return False
         if tag in self.SKIP:
             return True
         attrs = dict(attrs)
         if "hidden" in attrs or attrs.get("aria-hidden") == "true":
-            return tag not in ("br", "hr", "img", "input")
+            return True
         if attrs.get("role") in self.SKIP_ROLES:
             return tag in self.MAYBE_SKIP or tag in ("nav", "aside", "footer")
         if tag not in self.MAYBE_SKIP:
@@ -338,6 +344,8 @@ class TextExtractor(HTMLParser):
             self.main += 1
         if tag == "pre":
             self.pre += 1
+            if self.pre == 1:
+                self.emit(self.PRE_START)
         if tag in self.HEADINGS:
             self.emit("\n\n" + "#" * self.HEADINGS[tag] + " ")
         elif tag == "li":
@@ -356,8 +364,10 @@ class TextExtractor(HTMLParser):
             return
         if tag in ("main", "article"):
             self.main = max(0, self.main - 1)
-        if tag == "pre":
-            self.pre = max(0, self.pre - 1)
+        if tag == "pre" and self.pre:
+            self.pre -= 1
+            if self.pre == 0:
+                self.emit(self.PRE_END)
         if tag in self.HEADINGS or tag in self.BLOCK or tag == "li":
             self.emit("\n")
 
@@ -368,15 +378,29 @@ class TextExtractor(HTMLParser):
             return
         self.emit(data if self.pre else re.sub(r"\s+", " ", data))
 
-    @staticmethod
-    def tidy(parts):
-        lines, last = [], None
-        for line in "".join(parts).splitlines():
-            line = re.sub(r" {2,}", " ", line).strip()
-            if line and line != last:
-                lines.append(line)
-            last = line or last
-        return "\n".join(lines)
+    @classmethod
+    def tidy(cls, parts):
+        out, last = [], None
+        # re.split with a group alternates: normal text, <pre> text, normal text, ...
+        pattern = re.escape(cls.PRE_START) + "(.*?)" + re.escape(cls.PRE_END)
+        for i, segment in enumerate(re.split(pattern, "".join(parts), flags=re.S)):
+            segment = segment.replace(cls.PRE_START, "").replace(cls.PRE_END, "")
+            if i % 2:  # preformatted (code): keep indentation and inner blank lines
+                code = [line.rstrip() for line in segment.splitlines()]
+                while code and not code[0]:
+                    code.pop(0)
+                while code and not code[-1]:
+                    code.pop()
+                if code:
+                    out.append("```\n" + "\n".join(code) + "\n```")
+                    last = None
+                continue
+            for line in segment.splitlines():
+                line = re.sub(r" {2,}", " ", line).strip()
+                if line and line != last:
+                    out.append(line)
+                last = line or last
+        return "\n".join(out)
 
     def result(self):
         main = self.tidy(self.main_text)
@@ -568,8 +592,9 @@ def serve():
             continue
         response = handle(message) if isinstance(message, dict) else None
         if response is not None:
-            # ASCII-only JSON: a lone surrogate from \ud800 in the input can't break the write
-            out.write(json.dumps(response).encode("ascii") + b"\n")
+            # errors="replace": a lone surrogate (from \ud800 in the input) becomes "?" instead
+            # of crashing the write or producing JSON that strict parsers reject
+            out.write(json.dumps(response, ensure_ascii=False).encode("utf-8", "replace") + b"\n")
             out.flush()
 
 
