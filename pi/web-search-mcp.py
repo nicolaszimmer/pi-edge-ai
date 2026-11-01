@@ -35,6 +35,8 @@ import os
 import re
 import socket
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,7 +45,9 @@ from html.parser import HTMLParser
 VERSION = "1.0"
 USER_AGENT = (f"Mozilla/5.0 (compatible; pi-llm-web-search/{VERSION}; "
               "+https://github.com/nicolaszimmer/pi-edge-ai)")
-TIMEOUT = 20                       # seconds per HTTP request
+TIMEOUT = 20                       # seconds per network operation of a search
+FETCH_TIMEOUT = 10                 # seconds per network operation of a page fetch
+FETCH_DEADLINE = 25                # seconds for a whole page fetch (llama-server allows 60)
 MAX_DOWNLOAD = 3 * 1024 * 1024     # bytes read from a page at most
 SNIPPET_CHARS = 400
 
@@ -268,10 +272,10 @@ class TextExtractor(HTMLParser):
 
     # always skipped, with everything inside
     SKIP = {"head", "script", "style", "noscript", "svg", "template", "iframe", "nav", "footer",
-            "aside", "form", "button", "select", "dialog", "canvas"}
+            "aside", "button", "select", "textarea", "dialog", "canvas"}
     # skipped when their class/id/role says "menu", "cookie banner" and the like
     # (only tags that always have an end tag, so the nesting can be tracked)
-    MAYBE_SKIP = {"div", "section", "ul", "ol", "table", "header", "figure", "span", "sup"}
+    MAYBE_SKIP = {"div", "section", "ul", "ol", "table", "header", "figure", "span", "sup", "form"}
     BOILERPLATE = {"nav", "navbar", "navigation", "menu", "menubar", "sidebar", "footer",
                    "dropdown", "cookie", "cookies", "consent", "gdpr", "banner", "breadcrumb",
                    "breadcrumbs", "share", "sharing", "social", "advert", "advertisement", "ad",
@@ -279,6 +283,10 @@ class TextExtractor(HTMLParser):
                    "comments", "toc", "editsection", "reference", "references", "noprint"}
     SKIP_ROLES = {"navigation", "banner", "contentinfo", "complementary", "search", "menu",
                   "menubar", "dialog", "alert"}
+    # a <form> is only skipped when it looks like one of these. Some sites (ASP.NET
+    # WebForms, portals) wrap the whole page in a single form.
+    FORM_BOILERPLATE = {"search", "login", "signin", "signup", "register", "subscribe",
+                        "newsletter", "comment", "comments", "contact"}
     BLOCK = {"p", "div", "section", "article", "main", "header", "ul", "ol", "table", "tr",
              "blockquote", "pre", "br", "hr", "dl", "dt", "dd", "figcaption", "td", "th"}
     HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 4, "h6": 4}
@@ -306,7 +314,8 @@ class TextExtractor(HTMLParser):
         if tag not in self.MAYBE_SKIP:
             return False
         names = f"{attrs.get('class') or ''} {attrs.get('id') or ''}".lower()
-        return any(word in self.BOILERPLATE for word in re.split(r"[\s_-]+", names))
+        words = self.BOILERPLATE | (self.FORM_BOILERPLATE if tag == "form" else set())
+        return any(word in words for word in re.split(r"[\s_-]+", names))
 
     def emit(self, text):
         self.all.append(text)
@@ -388,6 +397,37 @@ def guess_charset(raw, header_charset):
     return "utf-8"
 
 
+def download(url, deadline):
+    """Fetch url, reading the body in chunks until MAX_DOWNLOAD or the deadline."""
+    opener = urllib.request.build_opener(PublicHTTPHandler, PublicHTTPSHandler, CheckedRedirects)
+    request = urllib.request.Request(url, headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+    })
+    try:
+        with opener.open(request, timeout=FETCH_TIMEOUT) as response:
+            chunks, size, cut_short = [], 0, False
+            while size < MAX_DOWNLOAD:
+                if time.monotonic() > deadline:
+                    cut_short = True
+                    break
+                chunk = response.read1(min(65536, MAX_DOWNLOAD - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            return {"url": response.geturl(), "ctype": response.headers.get_content_type(),
+                    "charset": response.headers.get_content_charset(),
+                    "raw": b"".join(chunks), "cut_short": cut_short}
+    except urllib.error.HTTPError as e:
+        error = ToolError(f"the page returned HTTP {e.code} ({e.reason}); try another result")
+    except (urllib.error.URLError, socket.timeout, TimeoutError, http.client.HTTPException) as e:
+        error = ToolError(f"could not load the page: {getattr(e, 'reason', e)}")
+    except Exception as e:  # incl. ToolError from the address check; call_tool reports it
+        error = e
+    return {"error": error}
+
+
 def web_fetch(args):
     url = str(args.get("url") or "").strip()
     if not url:
@@ -396,21 +436,18 @@ def web_fetch(args):
         url = "https://" + url
     check_public_url(url)
 
-    opener = urllib.request.build_opener(PublicHTTPHandler, PublicHTTPSHandler, CheckedRedirects)
-    request = urllib.request.Request(url, headers={
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
-    })
-    try:
-        with opener.open(request, timeout=TIMEOUT) as response:
-            final_url = response.geturl()
-            ctype = response.headers.get_content_type()
-            charset = response.headers.get_content_charset()
-            raw = response.read(MAX_DOWNLOAD)
-    except urllib.error.HTTPError as e:
-        raise ToolError(f"the page returned HTTP {e.code} ({e.reason}); try another result") from e
-    except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
-        raise ToolError(f"could not load the page: {getattr(e, 'reason', e)}") from e
+    # The timeouts above count per network operation, so a server that sends a byte
+    # every few seconds could stall the tool for minutes. Bound the whole fetch.
+    deadline = time.monotonic() + FETCH_DEADLINE
+    done = {}
+    worker = threading.Thread(target=lambda: done.update(download(url, deadline)), daemon=True)
+    worker.start()
+    worker.join(FETCH_DEADLINE + 2)
+    if worker.is_alive() or not done:
+        raise ToolError(f"the page did not load within {FETCH_DEADLINE} seconds; try another result")
+    if "error" in done:
+        raise done["error"]
+    final_url, ctype, charset, raw = done["url"], done["ctype"], done["charset"], done["raw"]
 
     decoded = raw.decode(guess_charset(raw, charset), "replace")
     if ctype in ("text/html", "application/xhtml+xml"):
@@ -427,6 +464,8 @@ def web_fetch(args):
 
     if not text:
         raise ToolError("the page has no readable text (it may need JavaScript); try another result")
+    if done["cut_short"]:
+        text += f"\n\n[The page was still loading after {FETCH_DEADLINE} seconds; this is the part that arrived.]"
     total = len(text)
     if total > FETCH_MAX_CHARS:
         text = text[:FETCH_MAX_CHARS].rsplit(None, 1)[0]
