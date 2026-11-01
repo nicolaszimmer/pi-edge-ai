@@ -455,6 +455,7 @@ def download(url, deadline):
 
 
 def web_fetch(args):
+    """Tool: fetch a public page within FETCH_DEADLINE and return its readable text."""
     url = str(args.get("url") or "").strip()
     if not url:
         raise ToolError("url is empty")

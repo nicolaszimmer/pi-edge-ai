@@ -334,7 +334,7 @@ Then use `http://pi-llm:8080` (MagicDNS) from anywhere. `sudo tailscale serve --
 pi/
   install.sh          one-shot installer (build, models, service, config)
   build-llama.sh      build or update llama.cpp natively (pinned release)
-  download-models.sh  fetch and checksum-verify the GGUFs (Gemma 4, Qwen 3.5)
+  download-models.sh  fetch and checksum-verify the GGUFs (Gemma 4, Qwen 3.5, Ministral 3, Granite 4.2, LFM2.5)
   add-model.sh        add a model to an installed server
   models.ini          model presets (installed to /etc/pi-llm/)
   server.env          listen address, port, extra flags (installed to /etc/pi-llm/)
