@@ -1,0 +1,39 @@
+# XcodeGen spec: generates PiChat.xcodeproj
+#   brew install xcodegen && cd ios && xcodegen && open PiChat.xcodeproj
+name: PiChat
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  PiChat:
+    type: application
+    platform: iOS
+    sources:
+      - path: PiChat
+    settings:
+      base:
+        # Must be unique for your Apple ID, change "example" to your name
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.pichat
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        # Or pick your team in Xcode > Signing & Capabilities
+        # DEVELOPMENT_TEAM: ABCDE12345
+    info:
+      path: PiChat/Info.plist
+      properties:
+        CFBundleDisplayName: Pi Chat
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: Pi Chat talks to the language model running on your Raspberry Pi.
+        # The Pi serves plain HTTP on your home network
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
