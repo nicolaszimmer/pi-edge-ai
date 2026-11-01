@@ -130,7 +130,7 @@ Open `http://pi-llm.local:8080` on any device in your network. The first time, t
 
 ### 5. Optional: the native iOS app
 
-[`ios/`](ios/README.md) contains **Pi Chat**, a small SwiftUI app that streams replies, shows tokens/s, switches models and sends photos. You build it with Xcode on a Mac and install it on your phone with a free Apple ID. [Instructions here](ios/README.md).
+[`ios/`](ios/README.md) contains **Pi Chat**, a small SwiftUI app that streams replies, keeps every chat, renders Markdown and LaTeX maths, shows tokens/s, switches models and sends photos. You build it with Xcode on a Mac and install it on your phone with a free Apple ID. [Instructions here](ios/README.md).
 
 ### 6. Check speed and health
 

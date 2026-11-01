@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingImage: Data?
     @State private var showSettings = false
+    @State private var showHistory = false
     @State private var showPhotoPicker = false
     @FocusState private var composerFocused: Bool
 
@@ -19,7 +20,7 @@ struct ChatView: View {
                     ForEach(store.messages) { message in
                         MessageRow(
                             message: message,
-                            isStreaming: store.isGenerating && message.id == store.messages.last?.id
+                            isStreaming: store.isGeneratingHere && message.id == store.messages.last?.id
                         )
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -34,6 +35,9 @@ struct ChatView: View {
             .onChange(of: store.messages.count) {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
+            .onChange(of: store.currentChatID) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
         }
         .overlay {
             if store.messages.isEmpty { emptyState }
@@ -42,6 +46,7 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .background(Theme.surface.ignoresSafeArea())
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showHistory) { HistoryView(newChat: startNewChat) }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) {
             Task { await loadPhoto() }
@@ -52,29 +57,36 @@ struct ChatView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 0) {
-            Button {
-                store.newChat()
-                draft = ""
-                pendingImage = nil
-            } label: {
-                Image(systemName: "square.and.pencil").font(.system(size: 17))
-            }
-            .buttonStyle(.ds(.ghost, iconOnly: true))
-            .disabled(store.messages.isEmpty)
-            .accessibilityLabel("New chat")
+        ZStack {
+            HStack(spacing: 0) {
+                Button {
+                    showHistory = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath").font(.system(size: 17))
+                }
+                .buttonStyle(.ds(.ghost, iconOnly: true))
+                .accessibilityLabel("Chats")
 
-            Spacer(minLength: 8)
+                Button(action: startNewChat) {
+                    Image(systemName: "square.and.pencil").font(.system(size: 17))
+                }
+                .buttonStyle(.ds(.ghost, iconOnly: true))
+                .disabled(store.messages.isEmpty)
+                .accessibilityLabel("New chat")
+
+                Spacer(minLength: 0)
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 17))
+                }
+                .buttonStyle(.ds(.ghost, iconOnly: true))
+                .accessibilityLabel("Settings")
+            }
+            // On top and centred on the screen, clear of the buttons either side.
             modelMenu
-            Spacer(minLength: 8)
-
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "slider.horizontal.3").font(.system(size: 17))
-            }
-            .buttonStyle(.ds(.ghost, iconOnly: true))
-            .accessibilityLabel("Settings")
+                .padding(.horizontal, 96)
         }
         .padding(.horizontal, 6)
         .frame(height: 56)
@@ -223,6 +235,9 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if store.isBusyElsewhere {
+                busyElsewhere
+            }
             if let data = pendingImage, let image = UIImage(data: data) {
                 pendingPhoto(image)
             }
@@ -264,7 +279,7 @@ struct ChatView: View {
                         .strokeBorder(composerFocused ? Theme.signal : Theme.lineStrong, lineWidth: composerFocused ? 2 : 1)
                 }
 
-                if store.isGenerating {
+                if store.isGeneratingHere {
                     Button("Stop") { store.stop() }
                         .buttonStyle(.ds(.secondary))
                 } else {
@@ -312,8 +327,33 @@ struct ChatView: View {
         }
     }
 
+    /// The Pi answers one question at a time: while it answers in another
+    /// chat, this one waits, with a way to go there.
+    private var busyElsewhere: some View {
+        let title = store.chats.first { $0.id == store.generatingChatID }?.title ?? "another chat"
+        return HStack(spacing: 8) {
+            Text("Still answering in “\(title)”. You can ask here once it is done.")
+                .font(Theme.sans(13))
+                .foregroundStyle(Theme.text2)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button("Open it") {
+                if let id = store.generatingChatID { store.open(id) }
+            }
+            .buttonStyle(.ds(.ghost, height: 32))
+        }
+    }
+
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pendingImage != nil
+        !store.isGenerating
+            && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pendingImage != nil)
+    }
+
+    private func startNewChat() {
+        store.newChat()
+        draft = ""
+        pendingImage = nil
     }
 
     private func send() {
@@ -387,7 +427,7 @@ struct MessageRow: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
-    /// The answer: plain prose, with what it took and when under it.
+    /// The answer, drawn from its Markdown and maths, with what it took and when under it.
     private var assistantTurn: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !message.reasoning.isEmpty {
@@ -396,9 +436,7 @@ struct MessageRow: View {
             if message.isError {
                 CalloutView(message.text, tone: .danger)
             } else if !message.text.isEmpty {
-                Text(Self.markdown(message.text))
-                    .font(Theme.lead)
-                    .foregroundStyle(Theme.text)
+                MarkdownView(text: message.text)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if isStreaming {
