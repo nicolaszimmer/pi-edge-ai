@@ -5,7 +5,7 @@ A small SwiftUI chat app for the Gemma server on your Pi:
 - streams answers token by token, with tokens/s shown under each reply
 - renders answers properly: headings, lists, tables, quotes, code blocks, and LaTeX maths, inline (`$a^2$`, `\(…\)`) and on its own line (`$$…$$`, `\[…\]`), typeset with [SwiftMath](https://github.com/mgriebling/SwiftMath)
 - keeps every chat: tap the clock icon to see them all by day, search them, open one, or swipe to rename or delete it. Tap the pencil icon for a new chat. An answer keeps arriving while you look at another chat
-- model picker (E2B / E4B) and an optional **Thinking** toggle
+- model picker (every model on the server: Gemma 4 E2B / E4B, Qwen 3.5 if you added it) and an optional **Thinking** toggle
 - attach a photo and ask about it (Gemma 4 is multimodal); photos are downscaled to 1024 px first to keep the Pi fast
 - tap the title to switch model or turn Thinking on for the next question
 - talks to the standard OpenAI-compatible `/v1/chat/completions` API, so it also works with other llama.cpp or OpenAI-style servers

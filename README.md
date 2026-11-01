@@ -1,18 +1,21 @@
 # Gemma 4 on a Raspberry Pi 5
 
-A private chat assistant on your home network: **Gemma 4 E2B and E4B** running on a **Raspberry Pi 5 (8 GB)** with **llama.cpp**, served through an **OpenAI-compatible API** with a **built-in web UI** and a small **iOS app**.
+A private chat assistant on your home network: **Gemma 4 E2B and E4B** running on a **Raspberry Pi 5 (8 GB)** with **llama.cpp**, served through an **OpenAI-compatible API** with a **built-in web UI** and a small **iOS app**. Optional: more models (**Qwen 3.5**) and **web search**.
 
 ```
  iPhone (Pi Chat app or Safari)  ─┐
  Laptop (browser, Python, curl)  ─┼──  http://pi-llm.local:8080  ──  Raspberry Pi 5
  Anything OpenAI-compatible      ─┘     /v1/chat/completions          llama-server (router)
                                         web UI at /                   ├─ gemma-4-e2b  (fast)
-                                                                      └─ gemma-4-e4b  (smarter)
+                                                                      ├─ gemma-4-e4b  (smarter)
+                                                                      ├─ qwen3.5-2b / 4b  (optional)
+                                                                      └─ web_search, web_fetch tools (optional)
 ```
 
 - [What you get and what to expect](#what-to-expect)
 - [What makes this setup fast](#what-makes-this-setup-fast)
 - [Step-by-step guide](#step-by-step) (about an hour, most of it waiting)
+- [More models: Qwen 3.5](#more-models-qwen-35) · [Web search](#web-search)
 - [Using the API](#using-the-api) · [iOS app](ios/README.md) · [Tuning](#tuning) · [Troubleshooting](#troubleshooting)
 
 ## What to expect
@@ -140,9 +143,91 @@ cd ~/pi-edge-ai/pi
 
 If `status.sh` reports **under-voltage** or **soft temperature limit**, fix the power supply or the cooling first. Nothing else matters as much.
 
+## More models: Qwen 3.5
+
+Besides Gemma, the scripts know Alibaba's **Qwen 3.5** small models. Like Gemma 4 they read photos, speak many languages and can use tools such as [web search](#web-search). They are optional; add them to your running Pi with one command:
+
+```bash
+cd ~/pi-edge-ai && git pull
+cd pi
+./add-model.sh                # lists the models you can add
+./add-model.sh qwen3.5-4b     # downloads it, adds it to the model menu, restarts the server
+```
+
+| | Qwen 3.5 2B | Qwen 3.5 4B |
+|---|---|---|
+| File (Q4_0) | 1.2 GB + 0.67 GB vision | 2.6 GB + 0.67 GB vision |
+| Speed on a Pi 5 (estimate) | roughly like Gemma 4 E2B | roughly like Gemma 4 E4B |
+| Good for | quick answers, a lighter alternative to E2B | harder questions; very reliable with the web tools in a short test |
+
+The speeds are estimates from the file sizes (generation speed on a Pi is limited by how many bytes it reads per token). `./bench.sh api qwen3.5-4b` gives you real numbers. Only one model sits in RAM at a time, so every extra model costs disk space, not memory.
+
+Good to know:
+
+- **Thinking** is off by default, as for Gemma (`reasoning = off` in `models.ini`). The web UI's thinking toggle works the same way.
+- **Sampling:** the Qwen sections in `models.ini` use Qwen's recommended settings (temperature 0.7, top-p 0.8, top-k 20, presence penalty 1.5).
+- **Source:** Qwen publishes no official Q4_0 GGUF, so the files come from [Unsloth's conversions](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF). Q4_0 is used because it is the fastest 4-bit format on the Pi 5's CPU. Unlike Gemma's QAT files it is not quantization-aware trained, so it loses a bit more quality.
+- **Bigger Qwen models don't fit.** Qwen 3.5 9B would just about fit in 8 GB but run at around 2 tokens/s, and Qwen 3.6 and 3.8 start at 27B.
+- **New install with Qwen from the start:** `MODELS="e2b e4b qwen3.5-4b" ./install.sh`.
+- **Remove a model:** delete its `[section]` from `/etc/pi-llm/models.ini`, run `sudo systemctl restart pi-llm`, and delete its files from `/opt/pi-llm/models`.
+- **Any other GGUF model** works the same way: download the file to `/opt/pi-llm/models` and add a section with a `model = /opt/pi-llm/models/<file>.gguf` line to `/etc/pi-llm/models.ini`.
+
+## Web search
+
+Optional: the models get two tools, `web_search` (titles, links and snippets from a search engine) and `web_fetch` (reads one web page as text). The built-in web UI uses them on its own. Ask "What's the weather in Hamburg tomorrow?" and the model searches, reads a page or two and answers. In a short test, Gemma 4 E2B and Qwen 3.5 4B chose the right tool almost every time and left questions like "what is 17 × 23" alone.
+
+You need a search engine. Pick one:
+
+| Engine | Cost (at the time of writing, check their sites) | What you need |
+|---|---|---|
+| [Tavily](https://tavily.com) | free plan: 1,000 searches a month | an account (email), no credit card |
+| [Brave Search API](https://brave.com/search/api/) | a monthly free credit covers about 1,000 searches | an account; signing up may ask for a payment card |
+| [SearXNG](https://docs.searxng.org) | free | no account; you run it yourself ([below](#searxng-on-the-pi)) |
+
+Then, on the Pi:
+
+```bash
+cd ~/pi-edge-ai && git pull
+cd pi
+./web-search.sh on
+```
+
+It asks which engine to use and for its API key (or SearXNG's address), runs a test search, and restarts the server. The first time the model wants to search in the web UI, a permission card appears: allow it once, or choose **Always allow**. You can switch the tools off under **Settings > Tools**.
+
+```bash
+./web-search.sh off           # back to fully local, your key is kept
+./web-search.sh setup         # switch to another search engine
+./web-search.sh test "query"  # search once from the Pi, without the model
+./web-search.sh status
+```
+
+What to know:
+
+- **Privacy:** search queries go to the engine you picked, and the pages the model reads are fetched by the Pi. Your conversation itself stays on the Pi. With SearXNG your queries go to the search engines through your own server instead of an API account.
+- **Speed:** a search result adds about 300 tokens to the prompt, a fetched page up to about 1,500. The Pi processes prompts at tens of tokens per second (`./bench.sh` shows "prompt t/s"), so reading a page can add half a minute or more. For faster, shallower reading, lower `WEB_FETCH_MAX_CHARS` in `/etc/pi-llm/web-search.env` and restart the service.
+- **Small models still make mistakes,** with or without search results. When it matters, ask for the links and check them. In the same test, Qwen 3.5 2B sometimes answered from memory instead of opening a page it was given.
+- **Safety:** `web_fetch` only opens public web addresses, never your router or other devices on your network. A web page can contain text aimed at the model; with only these tools available, the worst case is the model opening a page it shouldn't, and that page's address could carry bits of the chat. If that worries you, don't use **Always allow**, and look at each tool call before you approve it.
+- **Browser access from other sites:** with tools enabled, llama-server only accepts browser requests from other web pages if they are served from localhost (CORS). The built-in web UI, the iOS app, curl and Python are not affected. Only a separate browser-based chat app on another address would be; allow it with `--cors-origins http://<its-address>` in `LLM_EXTRA_ARGS` in `/etc/pi-llm/server.env`.
+- **Where it works:** in the built-in web UI, which runs the tool calls. API clients see the tools at `GET /tools` and can run them with `POST /tools` (llama.cpp marks this endpoint as internal, so it may change in newer versions). The iOS app doesn't use them yet.
+- **More tools:** `/etc/pi-llm/mcp.json` is a standard MCP server list. Any stdio MCP server you add there shows up in the web UI the same way. It runs as the `llm` service user, so only add programs you trust.
+
+### SearXNG on the Pi
+
+SearXNG is an open-source meta-search engine that you host yourself. It needs a few hundred MB of RAM, which leaves enough for every model here. With Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo mkdir -p /etc/searxng /var/cache/searxng
+sudo docker run -d --name searxng --restart unless-stopped -p 127.0.0.1:8888:8080 \
+  -v /etc/searxng:/etc/searxng -v /var/cache/searxng:/var/cache/searxng \
+  docker.io/searxng/searxng:latest
+```
+
+The web tool talks to SearXNG's JSON API, which is off by default. Open `/etc/searxng/settings.yml` (it appears after the first start), find `formats:` under `search:` and add `- json` below `- html`. Then run `sudo docker restart searxng`, and `./web-search.sh setup` (choose 3, address `http://127.0.0.1:8888`). The [SearXNG docs](https://docs.searxng.org/admin/installation-docker.html) cover other installation methods.
+
 ## Using the API
 
-Any OpenAI-compatible client works. Use base URL `http://pi-llm.local:8080/v1`, your API key, and model `gemma-4-e2b` or `gemma-4-e4b`.
+Any OpenAI-compatible client works. Use base URL `http://pi-llm.local:8080/v1`, your API key, and model `gemma-4-e2b` or `gemma-4-e4b` (or `qwen3.5-2b` / `qwen3.5-4b` if you added them).
 
 ```bash
 curl http://pi-llm.local:8080/v1/chat/completions \
@@ -181,6 +266,8 @@ Useful extras:
 | `/etc/pi-llm/models.ini` | models, context size, threads, sampling, thinking default, MTP |
 | `/etc/pi-llm/server.env` | listen address and port, extra server flags |
 | `/etc/pi-llm/api-keys` | API keys, one per line (add one per device if you like) |
+| `/etc/pi-llm/web-search.env` | web search on/off, search engine and its API key (root-only, created by `./web-search.sh`) |
+| `/etc/pi-llm/mcp.json` | tool servers llama-server starts when web search is on |
 
 After a change: `sudo systemctl restart pi-llm`. Logs: `journalctl -u pi-llm -f`.
 
@@ -228,7 +315,9 @@ Then use `http://pi-llm:8080` (MagicDNS) from anywhere. `sudo tailscale serve --
 |---|---|
 | `pi-llm.local` not found | Use the IP address (`hostname -I` on the Pi). Some Android and older Windows devices don't resolve `.local` names. |
 | `401 Invalid API Key` | The key must match a line in `/etc/pi-llm/api-keys`, sent as `Authorization: Bearer <key>`. |
-| `model 'x' not found` | The `model` field must be `gemma-4-e2b` or `gemma-4-e4b` (see `GET /v1/models`). |
+| `model 'x' not found` | The `model` field must be one of the IDs from `GET /v1/models`, e.g. `gemma-4-e2b`. |
+| The model doesn't search | Is it on? `./web-search.sh status` should list `web_search web_fetch`. Then reload the web UI and check **Settings > Tools**. Asking "search the web for …" also helps small models. |
+| `web search is not set up` or `rejected the API key` | Run `./web-search.sh setup` and enter the key again; `./web-search.sh test` shows the engine's answer. |
 | First reply takes long | The model is loading (after boot or a model switch). `./status.sh` shows its status. |
 | Slow, getting slower | `./status.sh`: look for throttling. Check the cooler, then the power supply. |
 | Service won't start | `journalctl -u pi-llm -n 100 --no-pager` usually says why, often a wrong path in `models.ini`. |
@@ -240,10 +329,16 @@ Then use `http://pi-llm:8080` (MagicDNS) from anywhere. `sudo tailscale serve --
 pi/
   install.sh          one-shot installer (build, models, service, config)
   build-llama.sh      build or update llama.cpp natively (pinned release)
-  download-models.sh  fetch and checksum-verify the Gemma 4 GGUFs
+  download-models.sh  fetch and checksum-verify the GGUFs (Gemma 4, Qwen 3.5)
+  add-model.sh        add a model to an installed server
   models.ini          model presets (installed to /etc/pi-llm/)
   server.env          listen address, port, extra flags (installed to /etc/pi-llm/)
   pi-llm.service      hardened systemd unit
+  web-search.sh       switch web search on or off, pick the search engine
+  web-search-mcp.py   the web_search / web_fetch tools (MCP server, Python, no dependencies)
+  web-search.env      web search settings template (installed to /etc/pi-llm/)
+  mcp.json            tool server list for llama-server (installed to /etc/pi-llm/)
+  common.sh           helpers shared by the scripts
   test-api.sh         smoke test: health, models, one chat completion
   bench.sh            speed benchmark (API or raw llama-bench)
   status.sh           health report: service, temperature, throttling, memory
