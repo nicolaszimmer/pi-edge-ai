@@ -4,6 +4,7 @@
 #   ./bench.sh              # API benchmark of every model the server offers
 #   ./bench.sh api gemma-4-e4b
 #   ./bench.sh raw          # llama-bench on the GGUF files (stops the service while it runs)
+#   ./bench.sh raw qwen3.5-4b
 #
 # Use the API mode to A/B-test settings in /etc/pi-llm/models.ini, for example
 # MTP speculative decoding or thread count: run, edit, restart the service, run again.
@@ -14,7 +15,7 @@ URL="${LLM_URL:-http://127.0.0.1:8080}"
 KEY="${LLM_API_KEY:-}"
 PREFIX="${PREFIX:-/opt/pi-llm}"
 BIN="$PREFIX/llama.cpp/build/bin"
-MODELS_DIR="$PREFIX/models"
+INI="${INI:-/etc/pi-llm/models.ini}"
 
 if [[ -z "$KEY" && -f /etc/pi-llm/api-keys ]]; then
     KEY=$(sudo grep -v '^#' /etc/pi-llm/api-keys | head -1)
@@ -66,11 +67,13 @@ bench_api() {
 }
 
 bench_raw() {
-    local files=()
-    for f in "$MODELS_DIR"/gemma-4-E2B-it-Q4_0.gguf "$MODELS_DIR"/gemma-4-E4B-it-Q4_0.gguf; do
-        [[ -f "$f" ]] && files+=(-m "$f")
-    done
-    [[ ${#files[@]} -gt 0 ]] || { echo "no models found in $MODELS_DIR" >&2; exit 1; }
+    # every model in models.ini (or only the ones named on the command line)
+    local files=() name path
+    while read -r name path; do
+        if [[ $# -gt 0 && ! " $* " == *" $name "* ]]; then continue; fi
+        [[ -f "$path" ]] && files+=(-m "$path")
+    done < <(awk -F'[][]' '/^\[/ { name = $2 } $1 ~ /^model[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); print name, $0 }' "$INI")
+    [[ ${#files[@]} -gt 0 ]] || { echo "no model files found (from $INI)" >&2; exit 1; }
 
     if systemctl is-active --quiet pi-llm 2>/dev/null; then
         echo "Stopping pi-llm to free RAM for the benchmark (restarted afterwards)..."
@@ -83,6 +86,6 @@ bench_raw() {
 
 case "$MODE" in
     api) bench_api "$@" ;;
-    raw) bench_raw ;;
-    *)   echo "usage: $0 [api [model...] | raw]" >&2; exit 1 ;;
+    raw) bench_raw "$@" ;;
+    *)   echo "usage: $0 [api [model...] | raw [model...]]" >&2; exit 1 ;;
 esac

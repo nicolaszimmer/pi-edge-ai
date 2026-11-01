@@ -3,8 +3,11 @@
 # Raspberry Pi 5. Run it as your normal user from this directory (it calls
 # sudo when needed). Safe to re-run: it keeps your existing config and API key.
 #
-#   ./install.sh                 # both models
-#   MODELS=e2b ./install.sh      # only E2B (smaller download)
+#   ./install.sh                             # Gemma 4 E2B + E4B
+#   MODELS=e2b ./install.sh                  # only E2B (smaller download)
+#   MODELS="e2b e4b qwen3.5-4b" ./install.sh # plus Qwen 3.5 4B (./download-models.sh --list)
+#
+# More models later: ./add-model.sh. Web search: ./web-search.sh on.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,9 +16,9 @@ CONF=/etc/pi-llm
 SERVICE_USER=llm
 MODELS="${MODELS:-e2b e4b}"
 
-log()  { printf '\n\033[1;34m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
-warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=common.sh
+. "$HERE/common.sh"
+log() { printf '\n\033[1;34m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 
 [[ $EUID -ne 0 ]] || die "run as your normal user, not root (the script uses sudo itself)"
 
@@ -35,7 +38,7 @@ echo "Free disk: ${free_gb} GB"
 # --- Packages ---------------------------------------------------------------
 log "Installing build dependencies"
 sudo apt-get update
-sudo apt-get install -y git cmake build-essential ccache libssl-dev openssl curl jq
+sudo apt-get install -y git cmake build-essential ccache libssl-dev openssl curl jq python3
 
 # --- Build llama.cpp ---------------------------------------------------------
 sudo mkdir -p "$PREFIX"
@@ -57,27 +60,19 @@ fi
 sudo install -d -m 0755 "$CONF"
 
 # Render models.ini, leaving out models whose files were not downloaded.
+# Comment lines directly above a [section] belong to it and go with it.
 rendered=$(mktemp)
 trap 'rm -f "$rendered"' EXIT
 awk '
     function flush() { if (keep) printf "%s", buf; buf = "" }
     BEGIN { keep = 1 }
+    /^[[:space:]]*;/ { pending = pending $0 ORS; next }
     /^\[/ { flush(); keep = 1 }
-    { buf = buf $0 ORS }
+    { buf = buf pending $0 ORS; pending = "" }
     $1 == "model" && $2 == "=" { if (system("test -f \"" $3 "\"") != 0) keep = 0 }
-    END { flush() }
+    END { buf = buf pending; flush() }
 ' "$HERE/models.ini" > "$rendered"
 
-# install_config <src> <dest> <mode> : never overwrite a file the user edited
-install_config() {
-    local src="$1" dest="$2" mode="$3"
-    if [[ ! -f "$dest" ]]; then
-        sudo install -m "$mode" -o root -g "$SERVICE_USER" "$src" "$dest"
-    elif ! sudo cmp -s "$src" "$dest"; then
-        sudo install -m "$mode" -o root -g "$SERVICE_USER" "$src" "$dest.new"
-        warn "kept your $dest; the new version is in $dest.new"
-    fi
-}
 install_config "$rendered" "$CONF/models.ini" 0644
 install_config "$HERE/server.env" "$CONF/server.env" 0644
 
@@ -87,6 +82,12 @@ if ! sudo test -s "$CONF/api-keys"; then
         | sudo tee "$CONF/api-keys" >/dev/null
     sudo chown "root:$SERVICE_USER" "$CONF/api-keys"
     sudo chmod 0640 "$CONF/api-keys"
+fi
+
+# Web search, if it was switched on before: update its tool script
+if sudo test -f "$CONF/web-search.env"; then
+    sudo install -d -m 0755 "$PREFIX/bin"
+    sudo install -m 0755 "$HERE/web-search-mcp.py" "$PREFIX/bin/web-search-mcp.py"
 fi
 
 # --- systemd ------------------------------------------------------------------
@@ -122,10 +123,13 @@ $(printf '\033[1;32m')All set!$(printf '\033[0m')
   OpenAI-compatible API base URL:        http://$host.local:$port/v1
   API key:                               $key
 
-  Models:   $(grep -o '^\[gemma[^]]*\]' "$rendered" | tr -d '[]' | paste -sd' ')
+  Models:   $(awk -F'[][]' '/^\[/ && $2 != "*" { print $2 }' "$rendered" | paste -sd' ')
   Config:   $CONF/models.ini, $CONF/server.env, $CONF/api-keys
   Logs:     journalctl -u pi-llm -f
   Status:   $HERE/status.sh
   Speed:    $HERE/bench.sh
+
+  More models (Qwen 3.5):  $HERE/add-model.sh
+  Web search:              $HERE/web-search.sh on
 
 EOF

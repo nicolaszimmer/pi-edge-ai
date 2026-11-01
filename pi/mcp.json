@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "web": {
+      "command": "/usr/bin/python3",
+      "args": ["/opt/pi-llm/bin/web-search-mcp.py"],
+      "timeout_ms": 60000
+    }
+  }
+}
