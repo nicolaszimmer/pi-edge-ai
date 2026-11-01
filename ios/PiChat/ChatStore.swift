@@ -36,13 +36,15 @@ final class ChatStore {
     @ObservationIgnored private var generationID = UUID()
     /// The messages of a chat still being answered while another is on screen.
     @ObservationIgnored private var background: [UUID: [ChatMessage]] = [:]
-    private let archive = ChatArchive.standard
-    private let defaults = UserDefaults.standard
+    private let archive: ChatArchive
+    private let defaults: UserDefaults
 
-    init() {
+    /// The app uses the standard archive and settings; tests pass their own.
+    init(archive: ChatArchive = .standard, defaults: UserDefaults = .standard) {
+        self.archive = archive
+        self.defaults = defaults
         chats = archive.loadIndex()
-        if chats.isEmpty,
-           let imported = archive.importSingleChat(from: URL.documentsDirectory.appending(path: "chat.json")) {
+        if chats.isEmpty, let imported = archive.importSingleChat(from: archive.singleChatFile) {
             chats = [imported]
             archive.saveIndex(chats)
             defaults.set(imported.id.uuidString, forKey: SettingsKey.currentChat)

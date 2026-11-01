@@ -16,6 +16,8 @@ The app is about 3,400 lines of Swift. Its one dependency is SwiftMath (MIT lice
 
 Chats are saved on the phone, one file per chat in the app's Documents folder (`Chats/`). The single conversation older versions kept is moved there as the first chat on the first launch.
 
+The parts that are plain Swift (the Markdown and maths reader, the chat archive and the chat store) have tests: run `ios/Tests/run.sh` on a Mac with Xcode, or on Linux with a Swift toolchain.
+
 > I wrote this code without being able to compile it (no Xcode where it was written). If Xcode reports an error, paste it into a chat with Claude and it will be quick to fix.
 
 ## Build and install on your iPhone

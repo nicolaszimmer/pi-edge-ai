@@ -37,9 +37,14 @@ struct SavedChat: Codable {
 struct ChatArchive {
     let folder: URL
 
+    /// Documents/Chats, the app's own archive.
     static var standard: ChatArchive {
-        ChatArchive(folder: URL.documentsDirectory.appending(path: "Chats"))
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return ChatArchive(folder: documents.appending(path: "Chats"))
     }
+
+    /// Where earlier versions kept their one conversation: chat.json beside the folder.
+    var singleChatFile: URL { folder.deletingLastPathComponent().appending(path: "chat.json") }
 
     private var indexURL: URL { folder.appending(path: "index.json") }
 
@@ -173,7 +178,8 @@ extension ChatSummary {
             }
             .joined(separator: "\n")
         // Emphasis and code marks in pairs only, so "5 * 3" keeps its star.
-        s = s.replacingOccurrences(of: #"(\*{1,3})(?=\S)(.+?)(?<=\S)\1"#, with: "$2", options: .regularExpression)
+        // Not inside a word either, so "2*x and 3*y" keeps both.
+        s = s.replacingOccurrences(of: #"(?<![\w*])(\*{1,3})(?=\S)(.+?)(?<=\S)\1(?![\w*])"#, with: "$2", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(`+)(.+?)\1"#, with: "$2", options: .regularExpression)
         // The maths back, as its LaTeX without the dollars; prices keep theirs.
         var out = ""
