@@ -240,6 +240,18 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     await wait(400)
     LlamaClient.asksFor = "web_search"
 
+    // Stop after the tool call came in but before the stream ended: no step, no question left open
+    LlamaClient.pauseAfterCalls = 300_000_000
+    store.newChat()
+    store.send("Halt", image: nil)
+    await wait(80)
+    check(store.isGeneratingHere && store.toolStepAwaitingApproval == nil, "tool call in, stream still open")
+    store.stop()
+    await wait(400)
+    check(store.toolStepAwaitingApproval == nil && !store.isGenerating
+          && !store.messages.contains { $0.role == .tool } && LlamaClient.ran.count == 3, "stopped before the step: \(store.messages.map(\.role))")
+    LlamaClient.pauseAfterCalls = 0
+
     // While waiting, the person looks at another chat and comes back
     store.newChat()
     store.send("Hin und zurück", image: nil)

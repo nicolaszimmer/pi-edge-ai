@@ -15,6 +15,8 @@ struct LlamaClient: Sendable {
     /// unless it has just had a tool's result (or `keepCalling` is set).
     nonisolated(unsafe) static var asksFor: String? = nil
     nonisolated(unsafe) static var keepCalling = false
+    /// How long the stream stays open after the tool call, before it ends.
+    nonisolated(unsafe) static var pauseAfterCalls: UInt64 = 0
 
     func models() async throws -> [ModelInfo] { [ModelInfo(id: "m", status: nil)] }
     func tools() async throws -> [ServerTool] { Self.offered }
@@ -36,6 +38,7 @@ struct LlamaClient: Sendable {
                 if let asks {
                     try? await Task.sleep(nanoseconds: 20_000_000)
                     c.yield(.toolCalls([ToolCall(id: "call-\(round)", name: asks, arguments: #"{"query":"q\#(round)"}"#)]))
+                    if Self.pauseAfterCalls > 0 { try? await Task.sleep(nanoseconds: Self.pauseAfterCalls) }
                     c.yield(.done(nil))
                     c.finish()
                     return

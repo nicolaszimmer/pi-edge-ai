@@ -80,6 +80,9 @@ struct ServerTool: Decodable, Equatable, Sendable {
     var isUsableByApp: Bool { type == "mcp" && permissions?["write"] == false }
 
     /// The tools of the Pi's own web-search server (`./web-search.sh on`).
+    /// llama-server names each MCP tool "<server>_<tool>" and skips a name it
+    /// already has, so these can only be the tools of the server called "web"
+    /// in mcp.json: the one web-search.sh writes.
     static let piWebTools: Set<String> = ["web_search", "web_fetch"]
 
     /// On until the person switches it off: the Pi's web search and page reading.
@@ -119,12 +122,13 @@ struct ToolCall: Codable, Equatable, Sendable {
     }
 
     /// The arguments read as JSON; an empty object if the model wrote something else.
-    var parameters: JSONValue {
-        if let value = try? JSONDecoder().decode(JSONValue.self, from: Data(arguments.utf8)),
-           case .object = value {
-            return value
-        }
-        return .object([:])
+    var parameters: JSONValue { objectArguments ?? .object([:]) }
+
+    /// The arguments, if they are a JSON object.
+    var objectArguments: JSONValue? {
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: Data(arguments.utf8)),
+              case .object = value else { return nil }
+        return value
     }
 }
 
@@ -162,10 +166,14 @@ struct ToolCallAccumulator {
 
     /// The finished calls, in order. A call without a name is dropped; one
     /// without an id gets one, since the result has to name the call it answers.
+    /// Arguments that aren't a JSON object (none at all, or cut off) become
+    /// {}: that is what the tool gets, and llama-server can refuse anything
+    /// else when the call goes back with the history.
     var result: [ToolCall] {
         order.enumerated().compactMap { n, index in
             guard var call = calls[index], !call.name.isEmpty else { return nil }
             if call.id.isEmpty { call.id = "call_\(n)" }
+            if call.objectArguments == nil { call.arguments = "{}" }
             return call
         }
     }

@@ -178,6 +178,9 @@ final class ChatStore {
                             update(chatID, replyID) { $0.stats = Self.format(timings) }
                         }
                     }
+                    // Stop ends the stream without an error; tool calls that
+                    // came in before it must not go on to ask or run.
+                    try Task.checkCancellation()
                     guard !calls.isEmpty, !offered.isEmpty else { break }
                     round += 1
                     update(chatID, replyID) { $0.toolCalls = calls }
@@ -379,6 +382,9 @@ final class ChatStore {
         if !alwaysAllowedTools.contains(call.name) {
             update(chatID, step.id) { $0.toolState = .waitingForApproval }
             saveChat(chatID)
+            // After Stop, nothing would answer the question. (No suspension
+            // between this check and the wait, so Stop can't slip in between.)
+            try Task.checkCancellation()
             let allowed = await withCheckedContinuation { continuation in
                 approval = (continuation, call.name)
                 toolStepAwaitingApproval = step.id

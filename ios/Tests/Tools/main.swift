@@ -69,6 +69,12 @@ two.add([ToolCallDelta(index: 1, id: "b", function: .init(name: "web_search", ar
 two.add([ToolCallDelta(index: 2, id: "c", function: .init(name: nil, arguments: "{}"))])
 check(two.result.map(\.id) == ["call_0", "b"] && two.result[0].parameters["url"]?.string == "https://example.com", "assembled: \(two.result)")
 check(ToolCall(id: "x", name: "n", arguments: "not json").parameters == .object([:]), "bad arguments become {}")
+// A finished call with no arguments, or cut-off ones, goes back as {}; good ones as written
+var odd = ToolCallAccumulator()
+odd.add([ToolCallDelta(index: 0, id: "a", function: .init(name: "web_search", arguments: nil))])
+odd.add([ToolCallDelta(index: 1, id: "b", function: .init(name: "web_fetch", arguments: "{\"url\": \"https://exa"))])
+odd.add([ToolCallDelta(index: 2, id: "c", function: .init(name: "web_search", arguments: "{ \"query\" : \"x\" }"))])
+check(odd.result.map(\.arguments) == ["{}", "{}", "{ \"query\" : \"x\" }"], "arguments: \(odd.result.map(\.arguments))")
 
 // The messages sent back: an answer that asked for a tool, and the tool's result
 let call = ToolCall(id: "abc", name: "web_search", arguments: #"{"query":"q"}"#)
