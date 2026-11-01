@@ -98,8 +98,12 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     defaults.set("http://x", forKey: SettingsKey.serverURL)
     let search = ServerTool(tool: "web_search", display_name: nil, type: "mcp", permissions: ["write": false],
                             definition: .object(["type": .string("function"), "function": .object(["name": .string("web_search")])]))
+    let fetch = ServerTool(tool: "web_fetch", display_name: nil, type: "mcp", permissions: ["write": false], definition: .object([:]))
+    // Never offered: llama-server's own tools, and a tool that doesn't say whether it writes
     let writer = ServerTool(tool: "write_file", display_name: nil, type: "server", permissions: ["write": true], definition: .object([:]))
-    LlamaClient.offered = [search, writer]
+    let reader = ServerTool(tool: "read_file", display_name: nil, type: "server", permissions: ["write": false], definition: .object([:]))
+    let unsure = ServerTool(tool: "mystery", display_name: nil, type: "mcp", permissions: nil, definition: .object([:]))
+    LlamaClient.offered = [search, writer, reader, unsure, fetch]
     LlamaClient.asksFor = "web_search"
     let store = ChatStore(archive: archive, defaults: defaults)
 
@@ -115,7 +119,7 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     store.newChat()
     store.send("Wie wird das Wetter morgen?", image: nil)
     await wait(80)
-    check(LlamaClient.lastTools.count == 1, "only the read-only tool offered: \(LlamaClient.lastTools.count)")
+    check(LlamaClient.lastTools.count == 2, "only the MCP tools that don't write offered: \(LlamaClient.lastTools.count)")
     let system = LlamaClient.lastWire.first
     check(system?.role == "system" && system?.text.hasPrefix("Today is ") == true, "date in the system prompt: \(system?.text ?? "none")")
     check(store.messages.map(\.role) == [.user, .assistant, .tool], "steps: \(store.messages.map(\.role))")
@@ -163,16 +167,44 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     await wait(80)
     store.answerToolRequest(.alwaysAllow)
     await wait(400)
-    check(defaults.bool(forKey: SettingsKey.toolsAlwaysAllowed) && LlamaClient.ran.count == 2, "always allow remembered")
+    check(store.alwaysAllowedTools == ["web_search"] && defaults.stringArray(forKey: SettingsKey.toolsAllowed) == ["web_search"]
+          && LlamaClient.ran.count == 2, "always allow remembered for that tool")
     store.newChat()
     store.send("Und noch eine", image: nil)
     await wait(80)
     check(store.toolStepAwaitingApproval == nil, "not asked again")
     await wait(400)
     check(LlamaClient.ran.count == 3 && store.messages.last?.text.hasSuffix("ten") == true, "ran without asking")
+    check(ChatStore(archive: archive, defaults: defaults).alwaysAllowedTools == ["web_search"], "kept after a relaunch")
+    // Another tool still asks
+    LlamaClient.asksFor = "web_fetch"
+    store.newChat()
+    store.send("Lies eine Seite", image: nil)
+    await wait(80)
+    check(store.toolStepAwaitingApproval != nil && store.messages.last?.toolName == "web_fetch", "a different tool asks")
+    store.answerToolRequest(.deny)
+    await wait(400)
+    LlamaClient.asksFor = "web_search"
+
+    // A tool the app did not offer: refused without asking, never sent to the Pi
+    for name in ["write_file", "read_file", "mystery"] {
+        LlamaClient.asksFor = name
+        store.newChat()
+        store.send("Mach was mit \(name)", image: nil)
+        await wait(80)
+        let refused = store.messages.first { $0.role == .tool }
+        check(store.toolStepAwaitingApproval == nil && refused?.toolState == .failed
+              && refused?.text.contains("no tool called \(name)") == true, "\(name) refused: \(refused?.text ?? "none")")
+        await wait(400)
+        check(LlamaClient.ran.count == 3 && store.messages.last?.text.hasSuffix("ten") == true, "\(name) not run, answer follows")
+    }
+    LlamaClient.asksFor = "web_search"
+
+    // Ask again: every tool asks once more
+    store.askAgainForAllTools()
+    check(store.alwaysAllowedTools.isEmpty && defaults.stringArray(forKey: SettingsKey.toolsAllowed) == nil, "ask again")
 
     // Stop while waiting: nothing hangs, the cut step stays out of the next question
-    defaults.set(false, forKey: SettingsKey.toolsAlwaysAllowed)
     store.newChat()
     store.send("Erste", image: nil)
     await wait(80)
@@ -202,11 +234,12 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     check(store.messages.last?.text.hasSuffix("ten") == true, "answered after coming back")
 
     // A model that never stops asking: tools go after five rounds, then it answers
-    defaults.set(true, forKey: SettingsKey.toolsAlwaysAllowed)
     LlamaClient.keepCalling = true
     let before = LlamaClient.requests
     store.newChat()
     store.send("Endlos", image: nil)
+    await wait(80)
+    store.answerToolRequest(.alwaysAllow)
     await wait(900)
     check(LlamaClient.requests - before == ChatStore.maxToolRounds + 1, "rounds: \(LlamaClient.requests - before)")
     check(LlamaClient.lastTools.isEmpty, "last request without tools")

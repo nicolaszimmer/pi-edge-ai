@@ -12,8 +12,8 @@ enum SettingsKey {
     static let currentChat = "currentChat"
     /// Let the model use the tools the Pi offers, such as web search.
     static let tools = "tools"
-    /// Run tools without asking first each time.
-    static let toolsAlwaysAllowed = "toolsAlwaysAllowed"
+    /// The tools that run without asking first, by name ("Always allow").
+    static let toolsAllowed = "toolsAllowed"
 
     static let defaultServerURL = "http://pi-llm.local:8080"
 }
@@ -39,6 +39,9 @@ final class ChatStore {
     var serverTools: [ServerTool] = []
     /// The tool step that waits for the person to allow it, if any.
     private(set) var toolStepAwaitingApproval: UUID?
+    /// The tools that run without asking, because the person chose Always
+    /// allow for each of them. A tool added to the Pi later still asks.
+    private(set) var alwaysAllowedTools: [String] = []
 
     /// The answer to "The model wants to search the web for …".
     enum ToolDecision { case allow, alwaysAllow, deny }
@@ -51,7 +54,7 @@ final class ChatStore {
     @ObservationIgnored private var generationID = UUID()
     /// The messages of a chat still being answered while another is on screen.
     @ObservationIgnored private var background: [UUID: [ChatMessage]] = [:]
-    @ObservationIgnored private var approval: CheckedContinuation<Bool, Never>?
+    @ObservationIgnored private var approval: (continuation: CheckedContinuation<Bool, Never>, tool: String)?
     private let archive: ChatArchive
     private let defaults: UserDefaults
 
@@ -59,6 +62,7 @@ final class ChatStore {
     init(archive: ChatArchive = .standard, defaults: UserDefaults = .standard) {
         self.archive = archive
         self.defaults = defaults
+        alwaysAllowedTools = defaults.stringArray(forKey: SettingsKey.toolsAllowed) ?? []
         chats = archive.loadIndex()
         if chats.isEmpty, let imported = archive.importSingleChat(from: archive.singleChatFile) {
             chats = [imported]
@@ -148,11 +152,13 @@ final class ChatStore {
             // The answer being written; after tool steps a new one follows them.
             var replyID = reply.id
             do {
-                let tools = useTools ? await toolDefinitions(client) : []
+                let tools = useTools ? await offeredTools(client) : []
+                let definitions = tools.map(\.definition)
+                let names = Set(tools.map(\.tool))
                 var round = 0
                 while true {
-                    let offered = round < Self.maxToolRounds ? tools : []
-                    let wire = wireHistory(chatID, toolsOn: !tools.isEmpty)
+                    let offered = round < Self.maxToolRounds ? definitions : []
+                    let wire = wireHistory(chatID, toolsOn: !definitions.isEmpty)
                     var calls: [ToolCall] = []
                     for try await event in client.streamChat(model: model, messages: wire, thinking: thinking, tools: offered) {
                         switch event {
@@ -170,7 +176,7 @@ final class ChatStore {
                     round += 1
                     update(chatID, replyID) { $0.toolCalls = calls }
                     for call in calls {
-                        try await runTool(call, in: chatID, client: client)
+                        try await runTool(call, in: chatID, client: client, offered: names)
                     }
                     let next = ChatMessage(role: .assistant, text: "")
                     append(next, to: chatID)
@@ -201,7 +207,7 @@ final class ChatStore {
         if let waiting = approval {
             approval = nil
             toolStepAwaitingApproval = nil
-            waiting.resume(returning: false)
+            waiting.continuation.resume(returning: false)
         }
         if let id = generatingChatID {
             generatingChatID = nil
@@ -215,10 +221,17 @@ final class ChatStore {
         guard let waiting = approval else { return }
         approval = nil
         toolStepAwaitingApproval = nil
-        if decision == .alwaysAllow {
-            defaults.set(true, forKey: SettingsKey.toolsAlwaysAllowed)
+        if decision == .alwaysAllow, !alwaysAllowedTools.contains(waiting.tool) {
+            alwaysAllowedTools.append(waiting.tool)
+            defaults.set(alwaysAllowedTools, forKey: SettingsKey.toolsAllowed)
         }
-        waiting.resume(returning: decision != .deny)
+        waiting.continuation.resume(returning: decision != .deny)
+    }
+
+    /// Every tool asks before it runs again.
+    func askAgainForAllTools() {
+        alwaysAllowedTools = []
+        defaults.removeObject(forKey: SettingsKey.toolsAllowed)
     }
 
     // MARK: Chats
@@ -317,28 +330,38 @@ final class ChatStore {
         archive.saveIndex(chats)
     }
 
-    /// The definitions of the read-only tools the Pi offers, asked for fresh,
-    /// so switching web search on at the Pi works without a restart here.
-    private func toolDefinitions(_ client: LlamaClient) async -> [JSONValue] {
+    /// The tools the app offers the model (see ServerTool.isOfferedByApp),
+    /// asked for fresh, so switching web search on at the Pi works without a
+    /// restart here.
+    private func offeredTools(_ client: LlamaClient) async -> [ServerTool] {
         if let fresh = try? await client.tools() { serverTools = fresh }
-        return serverTools.filter(\.isReadOnly).map(\.definition)
+        return serverTools.filter(\.isOfferedByApp)
     }
 
     /// One tool step: shown in the chat, asked about unless always allowed,
     /// run on the Pi, its result kept for the model. Only Stop throws.
-    private func runTool(_ call: ToolCall, in chatID: UUID, client: LlamaClient) async throws {
+    private func runTool(_ call: ToolCall, in chatID: UUID, client: LlamaClient, offered: Set<String>) async throws {
         var step = ChatMessage(role: .tool, text: "")
         step.toolCallID = call.id
         step.toolName = call.name
         step.toolArguments = call.arguments
+        // A model can name any tool, also one a web page told it about. Only
+        // the ones the app offered for this question run.
+        guard offered.contains(call.name) else {
+            step.toolState = .failed
+            step.text = "There is no tool called \(call.name) here. Use only the tools you were given."
+            append(step, to: chatID)
+            saveChat(chatID)
+            return
+        }
         step.toolState = .running
         append(step, to: chatID)
 
-        if !defaults.bool(forKey: SettingsKey.toolsAlwaysAllowed) {
+        if !alwaysAllowedTools.contains(call.name) {
             update(chatID, step.id) { $0.toolState = .waitingForApproval }
             saveChat(chatID)
             let allowed = await withCheckedContinuation { continuation in
-                approval = continuation
+                approval = (continuation, call.name)
                 toolStepAwaitingApproval = step.id
             }
             try Task.checkCancellation()

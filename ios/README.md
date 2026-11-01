@@ -24,15 +24,15 @@ The parts that are plain Swift (the Markdown and maths reader, the chat archive,
 If the Pi offers tools ([web search](../README.md#web-search), switched on with `./web-search.sh on`), the app can let the model use them:
 
 1. Open **Settings > Tools** and switch on **Web search and other tools**. The panel shows which tools the Pi offers; if it says none, switch web search on at the Pi and tap **Test connection**.
-2. Ask something that needs the web, such as *What's the weather in Hamburg tomorrow?* The model asks for a search; the chat shows what it wants to look up, with **Allow**, **Always allow** and **Don't allow**. After the search it may read a page, then it answers.
+2. Ask something that needs the web, such as *What's the weather in Hamburg tomorrow?* The model asks for a search; the chat shows what it wants to look up, with **Allow**, **Always allow this tool** and **Don't allow**. After the search it may read a page, then it answers.
 3. Each step stays in the chat as one line ("Searched the web for …", "Read en.wikipedia.org"), with what it found folded away under it.
 
 Good to know:
 
 - **What leaves your network:** the search words and the addresses of the pages the model reads, through the search engine set up on the Pi. The chat itself stays on the Pi and your phone. The line under the message box says so while tools are on.
-- **Ask before each use** (on by default) shows every step before it runs. **Always allow** turns it off; switch it back on in Settings.
+- **Every tool asks before it runs.** **Always allow this tool** stops the asking for that one tool (web search, say); **Ask again** in Settings undoes it. A tool added to the Pi later asks again.
 - **Today's date** goes to the model with the tools, so a search for "the latest …" or "tomorrow" uses the right year.
-- **Any tool, not only search:** the app offers the model every read-only tool the Pi lists, so an MCP server you add to `/etc/pi-llm/mcp.json` shows up here too. Tools that can write files or run commands on the Pi (llama-server's `--tools`) are never offered.
+- **Any MCP tool, not only search:** the app offers the model the tools of the MCP servers in the Pi's `/etc/pi-llm/mcp.json`, so a server you add there shows up here too. llama-server can't tell what an MCP tool does, so only add servers you trust. llama-server's own file and shell tools (`--tools`) are never offered, and the app refuses to run a tool it didn't offer, even if the model (or a web page it read) names one.
 - **Speed:** each step means another round on the Pi: the model reads the search results or the page before it answers. Expect a search question to take several times as long as a plain one. After five rounds the model has to answer with what it has.
 - **Which models:** in tests, Gemma 4 E2B, Qwen 3.5 4B, Ministral 3 3B and LFM2.5 8B-A1B used the tools well; see [More models](../README.md#more-models).
 

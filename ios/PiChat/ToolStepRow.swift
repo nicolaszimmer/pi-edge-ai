@@ -83,7 +83,7 @@ struct ToolStepRow: View {
     @ViewBuilder private var buttons: some View {
         Button("Allow") { store.answerToolRequest(.allow) }
             .buttonStyle(.ds(.primary))
-        Button("Always allow") { store.answerToolRequest(.alwaysAllow) }
+        Button("Always allow this tool") { store.answerToolRequest(.alwaysAllow) }
             .buttonStyle(.ds(.secondary))
         Button("Don’t allow") { store.answerToolRequest(.deny) }
             .buttonStyle(.ds(.ghost))

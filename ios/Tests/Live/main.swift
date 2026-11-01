@@ -54,7 +54,7 @@ func run() async throws {
     print("Live: \(model) at \(client.baseURL)")
     let tools = try await client.tools()
     check(tools.map(\.tool).contains("web_search") && tools.map(\.tool).contains("web_fetch"), "tools listed: \(tools.map(\.tool))")
-    let definitions = tools.filter(\.isReadOnly).map(\.definition)
+    let definitions = tools.filter(\.isOfferedByApp).map(\.definition)
 
     let plain = try await ask([.init(role: "user", text: "Say hello in one word.")], tools: [])
     check(!plain.text.isEmpty && plain.calls.isEmpty, "answer without tools: \(plain)")

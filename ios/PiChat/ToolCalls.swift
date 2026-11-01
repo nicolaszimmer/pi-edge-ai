@@ -67,9 +67,15 @@ struct ServerTool: Decodable, Equatable, Sendable {
     /// The OpenAI-style definition the model gets to see.
     let definition: JSONValue
 
-    /// The app only offers tools that read. llama-server's file tools that can
-    /// write or run commands on the Pi (`--tools`) are left out.
-    var isReadOnly: Bool { permissions?["write"] != true }
+    /// The app offers the model only tools from MCP servers in the Pi's
+    /// mcp.json (such as web search), and only when the server says they don't
+    /// write. llama-server's own file and shell tools (`--tools`) are never
+    /// offered, and a tool that doesn't say is left out too.
+    ///
+    /// llama-server marks every MCP tool as not writing, whatever the tool
+    /// does, so this is no promise that it only reads: each tool still asks
+    /// before it runs, unless the person chose Always allow for that one.
+    var isOfferedByApp: Bool { type == "mcp" && permissions?["write"] == false }
 }
 
 /// A tool call, written the OpenAI way:

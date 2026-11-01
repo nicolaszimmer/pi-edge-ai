@@ -10,7 +10,6 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.systemPrompt) private var systemPrompt = ""
     @AppStorage(SettingsKey.thinking) private var thinking = false
     @AppStorage(SettingsKey.tools) private var tools = false
-    @AppStorage(SettingsKey.toolsAlwaysAllowed) private var toolsAlwaysAllowed = false
 
     @State private var testing = false
     @State private var testResult: TestResult?
@@ -160,16 +159,27 @@ struct SettingsView: View {
                         .foregroundStyle(Theme.text3)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text(Self.toolsSentence(store.serverTools.filter(\.isReadOnly).map(\.tool)))
+                    Text(Self.toolsSentence(store.serverTools.filter(\.isOfferedByApp).map(\.tool)))
                         .font(Theme.sans(12))
                         .foregroundStyle(Theme.text3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                SwitchRow(
-                    title: "Ask before each use",
-                    note: "Shows what the model wants to look up and waits for your OK.",
-                    isOn: Binding(get: { !toolsAlwaysAllowed }, set: { toolsAlwaysAllowed = !$0 })
-                )
+                if store.alwaysAllowedTools.isEmpty {
+                    Text("Each tool asks before it runs. Choose “Always allow this tool” on a step to stop asking for that one.")
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    HStack(spacing: 8) {
+                        Text("Runs without asking: \(store.alwaysAllowedTools.formatted(.list(type: .and))).")
+                            .font(Theme.sans(12))
+                            .foregroundStyle(Theme.text3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Ask again") { store.askAgainForAllTools() }
+                            .buttonStyle(.ds(.secondary, height: 32))
+                    }
+                }
             }
         }
     }
