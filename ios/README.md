@@ -6,9 +6,12 @@ A small SwiftUI chat app for the Gemma server on your Pi:
 - model picker (E2B / E4B) and an optional **Thinking** toggle
 - attach a photo and ask about it (Gemma 4 is multimodal); photos are downscaled to 1024 px first to keep the Pi fast
 - remembers the conversation; tap the pencil icon for a new chat
+- tap the title to switch model or turn Thinking on for the next question
 - talks to the standard OpenAI-compatible `/v1/chat/completions` API, so it also works with other llama.cpp or OpenAI-style servers
 
-The app is about 700 lines of Swift with no dependencies. It needs iOS 17 and a Mac with Xcode 15 or newer.
+The look follows the Rapid Review design system: ink for every control, electric blue only for the assistant's mark, the focused message box and the chosen model, Instrument Sans for text and JetBrains Mono for model names, in light and dark. The tokens are in `PiChat/Theme.swift`, the shared controls in `PiChat/Components.swift`, and both fonts ship in `PiChat/Fonts` (SIL Open Font License, licences beside them).
+
+The app is about 1,600 lines of Swift with no dependencies. It needs iOS 17 and a Mac with Xcode 15 or newer.
 
 > I wrote this code without being able to compile it (no Xcode where it was written). If Xcode reports an error, paste it into a chat with Claude and it will be quick to fix.
 
@@ -27,7 +30,7 @@ open PiChat.xcodeproj
 
 1. **File > New > Project > iOS > App.** Name it `PiChat`, Interface **SwiftUI**, Storage **None**.
 2. Delete the generated `ContentView.swift` and `PiChatApp.swift`.
-3. Drag the five `.swift` files from `ios/PiChat/` into the project (check "Copy items if needed").
+3. Drag the seven `.swift` files and the `Fonts` folder from `ios/PiChat/` into the project (check "Copy items if needed" and the PiChat target). The app registers the fonts itself, so no Info.plist entry is needed.
 4. Target **PiChat > General**: set *Minimum Deployments* to iOS 17.0.
 5. Target **PiChat > Info**, add two keys:
    - `App Transport Security Settings` > `Allow Arbitrary Loads` = `YES` (the Pi serves plain HTTP on your LAN)
@@ -38,7 +41,7 @@ open PiChat.xcodeproj
 1. **Signing & Capabilities**: pick your Team. A free Apple ID works, but apps signed with one expire after 7 days (just hit Run again). A paid developer account gives you 1 year.
 2. If Xcode complains about the bundle identifier, change `com.example.pichat` to something unique.
 3. Connect your iPhone, select it as the run destination, and press **Run**. On first install, enable **Settings > Privacy & Security > Developer Mode** on the phone and trust the developer certificate under **Settings > General > VPN & Device Management**.
-4. In the app, open **Settings** (gear icon), enter `http://pi-llm.local:8080` (or `http://<pi-ip>:8080`) and the API key from the installer, then tap **Test connection**. Allow local network access when iOS asks.
+4. In the app, open **Settings** (the sliders icon, top right), enter `http://pi-llm.local:8080` (or `http://<pi-ip>:8080`) and the API key from the installer, then tap **Test connection**. Allow local network access when iOS asks.
 
 ## No Mac?
 

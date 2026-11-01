@@ -2,7 +2,7 @@
 #   brew install xcodegen && cd ios && xcodegen && open PiChat.xcodeproj
 name: PiChat
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: com.nicolaszimmer
   deploymentTarget:
     iOS: "17.0"
 settings:
@@ -19,11 +19,11 @@ targets:
     settings:
       base:
         # Must be unique for your Apple ID, change "example" to your name
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.pichat
+        PRODUCT_BUNDLE_IDENTIFIER: com.nicolaszimmer.pichat
         TARGETED_DEVICE_FAMILY: "1,2"
-        CODE_SIGN_STYLE: Automatic
+        #CODE_SIGN_STYLE: Automatic
         # Or pick your team in Xcode > Signing & Capabilities
-        # DEVELOPMENT_TEAM: ABCDE12345
+        DEVELOPMENT_TEAM: 65JMJZVHL5
     info:
       path: PiChat/Info.plist
       properties:

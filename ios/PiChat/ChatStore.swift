@@ -22,6 +22,8 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var imageJPEG: Data? = nil
     var stats: String? = nil
     var isError: Bool = false
+    /// When it was sent or answered (nil for chats saved before this was kept).
+    var date: Date? = Date()
 }
 
 @MainActor
@@ -31,6 +33,9 @@ final class ChatStore {
     var isGenerating = false
     var models: [LlamaClient.ModelInfo] = []
     var connectionError: String?
+    /// True when the last connection error was the network (no answer at all),
+    /// false when the Pi answered with an error or the address is not valid.
+    var connectionUnreachable = false
 
     @ObservationIgnored private var generation: Task<Void, Never>?
     @ObservationIgnored private var generationID = UUID()
@@ -47,6 +52,14 @@ final class ChatStore {
 
     var selectedModel: String { defaults.string(forKey: SettingsKey.model) ?? "" }
 
+    /// The server as a person reads it: pi-llm.local:8080.
+    var serverAddress: String {
+        let raw = defaults.string(forKey: SettingsKey.serverURL) ?? SettingsKey.defaultServerURL
+        guard let url = LlamaClient.normalizedBaseURL(raw), let host = url.host else { return raw }
+        if let port = url.port { return "\(host):\(port)" }
+        return host
+    }
+
     private func makeClient() -> LlamaClient? {
         let raw = defaults.string(forKey: SettingsKey.serverURL) ?? SettingsKey.defaultServerURL
         guard let url = LlamaClient.normalizedBaseURL(raw) else { return nil }
@@ -55,24 +68,28 @@ final class ChatStore {
 
     func refreshModels() async {
         guard let client = makeClient() else {
-            connectionError = "Enter a valid server URL in Settings."
+            connectionError = "Enter a valid server address in Settings."
+            connectionUnreachable = false
             return
         }
         do {
             models = try await client.models()
             connectionError = nil
+            connectionUnreachable = false
             if !models.contains(where: { $0.id == selectedModel }), let first = models.first {
                 defaults.set(first.id, forKey: SettingsKey.model)
             }
         } catch {
             connectionError = error.localizedDescription
+            connectionUnreachable = error is URLError
         }
     }
 
     func send(_ text: String, image: Data?) {
         guard !isGenerating else { return }
         guard let client = makeClient() else {
-            connectionError = "Enter a valid server URL in Settings."
+            connectionError = "Enter a valid server address in Settings."
+            connectionUnreachable = false
             return
         }
 
@@ -154,6 +171,6 @@ final class ChatStore {
 
     private static func format(_ t: LlamaClient.Timings?) -> String? {
         guard let t, let tps = t.predicted_per_second, let n = t.predicted_n else { return nil }
-        return String(format: "%ld tokens · %.1f tok/s", n, tps)
+        return String(format: "%ld tokens · %.1f tokens a second", n, tps)
     }
 }

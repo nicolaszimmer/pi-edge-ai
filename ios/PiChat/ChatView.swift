@@ -4,126 +4,311 @@ import SwiftUI
 struct ChatView: View {
     @Environment(ChatStore.self) private var store
     @AppStorage(SettingsKey.model) private var model = ""
+    @AppStorage(SettingsKey.thinking) private var thinking = false
     @State private var draft = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingImage: Data?
     @State private var showSettings = false
+    @State private var showPhotoPicker = false
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
-        NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(store.messages) { message in
-                            MessageRow(
-                                message: message,
-                                isStreaming: store.isGenerating && message.id == store.messages.last?.id
-                            )
-                        }
-                        Color.clear.frame(height: 1).id("bottom")
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    ForEach(store.messages) { message in
+                        MessageRow(
+                            message: message,
+                            isStreaming: store.isGenerating && message.id == store.messages.last?.id
+                        )
                     }
-                    .padding()
+                    Color.clear.frame(height: 1).id("bottom")
                 }
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: store.messages.last?.text) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onChange(of: store.messages.count) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                .padding(16)
             }
-            .overlay {
-                if store.messages.isEmpty { emptyState }
+            .defaultScrollAnchor(.bottom)
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: store.messages.last?.text) {
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
-            .safeAreaInset(edge: .bottom) { inputBar }
-            .navigationTitle(model.isEmpty ? "Pi Chat" : model)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { store.newChat() } label: { Image(systemName: "square.and.pencil") }
-                        .accessibilityLabel("New chat")
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if store.models.count > 1 {
-                        Menu {
-                            Picker("Model", selection: $model) {
-                                ForEach(store.models) { Text($0.id).tag($0.id) }
-                            }
-                        } label: { Image(systemName: "cpu") }
-                            .accessibilityLabel("Choose model")
-                    }
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("Settings")
-                }
+            .onChange(of: store.messages.count) {
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
+        }
+        .overlay {
+            if store.messages.isEmpty { emptyState }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { header }
+        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .background(Theme.surface.ignoresSafeArea())
+        .sheet(isPresented: $showSettings) { SettingsView() }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) {
+            Task { await loadPhoto() }
         }
         .task { await store.refreshModels() }
     }
 
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("Gemma on your Pi", systemImage: "bubble.left.and.text.bubble.right")
-        } description: {
-            if let error = store.connectionError {
-                Text(error)
-            } else {
-                Text("Ask anything, or attach a photo. Everything stays on your home network.")
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 0) {
+            Button {
+                store.newChat()
+                draft = ""
+                pendingImage = nil
+            } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 17))
             }
-        } actions: {
-            if store.connectionError != nil {
-                Button("Open Settings") { showSettings = true }
-                Button("Retry") { Task { await store.refreshModels() } }
+            .buttonStyle(.ds(.ghost, iconOnly: true))
+            .disabled(store.messages.isEmpty)
+            .accessibilityLabel("New chat")
+
+            Spacer(minLength: 8)
+            modelMenu
+            Spacer(minLength: 8)
+
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 17))
+            }
+            .buttonStyle(.ds(.ghost, iconOnly: true))
+            .accessibilityLabel("Settings")
+        }
+        .padding(.horizontal, 6)
+        .frame(height: 56)
+        .background(Theme.surface.ignoresSafeArea(edges: .top))
+        .overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
+    }
+
+    /// The title. Tapping it picks the model and turns Thinking on or off.
+    private var modelMenu: some View {
+        Menu {
+            Picker(selection: $model) {
+                ForEach(store.models) { m in
+                    Text(m.id).tag(m.id)
+                }
+            } label: {
+                Text("Model")
+            }
+            .pickerStyle(.inline)
+
+            Toggle(isOn: $thinking) {
+                Text("Thinking")
+                Text("Better answers, much slower on a Pi")
+            }
+        } label: {
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.signal)
+                    Text("Pi Chat")
+                        .font(Theme.section)
+                        .foregroundStyle(Theme.text)
+                }
+                HStack(spacing: 4) {
+                    if store.models.isEmpty {
+                        Text(store.connectionError == nil ? "Connecting…" : "Not connected")
+                            .font(Theme.sans(12))
+                    } else {
+                        Text(model.isEmpty ? "Choose a model" : model)
+                            .font(Theme.mono(12))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(Theme.text3)
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .disabled(store.models.isEmpty)
+        .accessibilityLabel(Text(modelMenuLabel))
+    }
+
+    private var modelMenuLabel: String {
+        model.isEmpty ? "Pi Chat" : "Model: \(model). Choose another"
+    }
+
+    // MARK: Empty chat
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if let error = store.connectionError {
+                connectionProblem(error)
+            } else {
+                welcome
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+    }
+
+    private var welcome: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(Theme.signal)
+                    .accessibilityHidden(true)
+                Text("Gemma on your Pi")
+                    .font(Theme.pageTitle)
+                    .tracking(Theme.pageTitleTracking)
+                    .foregroundStyle(Theme.text)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Ask anything, or attach a photo and ask about it.")
+                    .font(Theme.lead)
+                    .foregroundStyle(Theme.text2)
+            }
+            VStack(spacing: 8) {
+                starter("Describe what is in a photo") {
+                    draft = "Describe what is in this photo."
+                    showPhotoPicker = true
+                }
+                starter("Summarise a text I paste in") {
+                    draft = "Summarise this text:\n\n"
+                    composerFocused = true
+                }
+                starter("Explain something step by step") {
+                    draft = "Explain step by step: "
+                    composerFocused = true
+                }
             }
         }
     }
 
-    private var inputBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let data = pendingImage, let image = UIImage(data: data) {
-                HStack(alignment: .top) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    Button { pendingImage = nil } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                    }
-                    .accessibilityLabel("Remove photo")
-                }
-            }
-            HStack(alignment: .bottom, spacing: 10) {
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    Image(systemName: "photo").font(.title3).padding(.bottom, 6)
-                }
-                .accessibilityLabel("Attach photo")
+    private func starter(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.body)
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 10))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
 
-                TextField("Message", text: $draft, axis: .vertical)
+    private func connectionProblem(_ error: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if store.connectionUnreachable {
+                NoticeView(
+                    .danger,
+                    title: "Pi Chat cannot reach the Pi.",
+                    message: "It asked \(store.serverAddress) and got no answer. Check that the Pi is switched on and on the same network as this iPhone."
+                )
+            } else {
+                NoticeView(
+                    .danger,
+                    title: "Pi Chat cannot talk to the Pi.",
+                    message: "Check the address and the API key in Settings. The error below says what went wrong."
+                )
+            }
+            Fold("Error as kept", mono: true) { Text(error) }
+            HStack(spacing: 8) {
+                Button("Open settings") { showSettings = true }
+                    .buttonStyle(.ds(.primary))
+                Button("Try again") { Task { await store.refreshModels() } }
+                    .buttonStyle(.ds(.secondary))
+            }
+        }
+    }
+
+    // MARK: Composer
+
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let data = pendingImage, let image = UIImage(data: data) {
+                pendingPhoto(image)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                HStack(alignment: .bottom, spacing: 0) {
+                    Button {
+                        showPhotoPicker = true
+                    } label: {
+                        Image(systemName: "photo")
+                            .font(.system(size: 17))
+                            .frame(width: 40, height: 42)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.text2)
+                    .accessibilityLabel("Attach a photo")
+
+                    TextField(
+                        text: $draft,
+                        prompt: Text(pendingImage == nil ? "Ask anything, or attach a photo" : "Ask about the photo")
+                            .foregroundStyle(Theme.text3),
+                        axis: .vertical
+                    ) {
+                        Text("Message")
+                    }
+                    .font(Theme.lead)
+                    .foregroundStyle(Theme.text)
                     .lineLimit(1...6)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                    .focused($composerFocused)
+                    .padding(.vertical, 9)
+                    .padding(.trailing, 10)
+                }
+                .padding(.leading, 2)
+                .frame(minHeight: 44)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    // The message box is the one field that takes the signal when focused.
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(composerFocused ? Theme.signal : Theme.lineStrong, lineWidth: composerFocused ? 2 : 1)
+                }
 
                 if store.isGenerating {
-                    Button { store.stop() } label: {
-                        Image(systemName: "stop.circle.fill").font(.system(size: 30))
-                    }
-                    .accessibilityLabel("Stop")
+                    Button("Stop") { store.stop() }
+                        .buttonStyle(.ds(.secondary))
                 } else {
                     Button(action: send) {
-                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 30))
+                        Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold))
                     }
+                    .buttonStyle(.ds(.primary, iconOnly: true))
                     .disabled(!canSend)
                     .accessibilityLabel("Send")
                 }
             }
+            Text("Gemma runs on your Pi. Nothing you send leaves your home network.")
+                .font(Theme.sans(12))
+                .foregroundStyle(Theme.text3)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .onChange(of: photoItem) {
-            Task { await loadPhoto() }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(Theme.surface.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) { Theme.line.frame(height: 1) }
+    }
+
+    private func pendingPhoto(_ image: UIImage) -> some View {
+        HStack(spacing: 12) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line))
+                .accessibilityLabel("Photo to send")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Photo attached")
+                    .font(Theme.sans(13, .medium))
+                    .foregroundStyle(Theme.text)
+                Text("Sent at 1024 px at most, so the Pi answers sooner.")
+                    .font(Theme.sans(12))
+                    .foregroundStyle(Theme.text3)
+            }
+            Spacer(minLength: 0)
+            Button("Remove") { pendingImage = nil }
+                .buttonStyle(.ds(.ghost))
         }
     }
 
@@ -148,59 +333,109 @@ struct ChatView: View {
     }
 }
 
+// MARK: - A turn
+
 struct MessageRow: View {
     let message: ChatMessage
     let isStreaming: Bool
-    @State private var showReasoning = false
-
-    private var isUser: Bool { message.role == .user }
 
     var body: some View {
-        HStack {
-            if isUser { Spacer(minLength: 48) }
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
-                if let data = message.imageJPEG, let image = UIImage(data: data) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 220, maxHeight: 220)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-                if !message.reasoning.isEmpty {
-                    DisclosureGroup("Thinking", isExpanded: $showReasoning) {
-                        Text(message.reasoning)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                    .font(.footnote)
-                }
-                if !message.text.isEmpty {
-                    Text(Self.markdown(message.text))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(isUser ? Color.white : Color.primary)
-                        .background(bubbleColor, in: RoundedRectangle(cornerRadius: 16))
-                        .contextMenu {
-                            Button("Copy", systemImage: "doc.on.doc") {
-                                UIPasteboard.general.string = message.text
-                            }
-                        }
-                } else if isStreaming {
-                    ProgressView().padding(8)
-                }
-                if let stats = message.stats {
-                    Text(stats).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            if !isUser { Spacer(minLength: 48) }
+        if message.role == .user {
+            userTurn
+        } else {
+            assistantTurn
         }
     }
 
-    private var bubbleColor: Color {
-        if message.isError { return Color.red.opacity(0.15) }
-        return isUser ? Color.accentColor : Color(.secondarySystemBackground)
+    /// The person's message: right-aligned on accent-soft, a 4 pt corner at the tail.
+    private var userTurn: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if let data = message.imageJPEG, let image = UIImage(data: data) {
+                let size = Self.fitted(image.size, maxWidth: 200, maxHeight: 220)
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line))
+                    .accessibilityLabel("Photo")
+            }
+            if !message.text.isEmpty {
+                Text(Self.markdown(message.text))
+                    .font(Theme.lead)
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        Theme.accentSoft,
+                        in: UnevenRoundedRectangle(
+                            topLeadingRadius: 14,
+                            bottomLeadingRadius: 14,
+                            bottomTrailingRadius: 4,
+                            topTrailingRadius: 14
+                        )
+                    )
+                    .contextMenu {
+                        Button("Copy", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = message.text
+                        }
+                    }
+            }
+        }
+        .padding(.leading, 48)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// The answer: plain prose, with what it took and when under it.
+    private var assistantTurn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !message.reasoning.isEmpty {
+                Fold("Thinking") { Text(message.reasoning) }
+            }
+            if message.isError {
+                CalloutView(message.text, tone: .danger)
+            } else if !message.text.isEmpty {
+                Text(Self.markdown(message.text))
+                    .font(Theme.lead)
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if isStreaming {
+                WaitingRow(message.reasoning.isEmpty
+                    ? "Reading your message. The first words can take a while on a Pi."
+                    : "Thinking. The answer follows once it is done.")
+            }
+            if !isStreaming && !message.isError && !message.text.isEmpty {
+                HStack(spacing: 2) {
+                    Button {
+                        UIPasteboard.general.string = message.text
+                    } label: {
+                        Image(systemName: "doc.on.doc").font(.system(size: 15))
+                    }
+                    .buttonStyle(.ds(.ghost, iconOnly: true))
+                    .accessibilityLabel("Copy the answer")
+
+                    Text(metaLine)
+                        .font(Theme.sans(12))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.text3)
+                }
+                .padding(.leading, -12)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 214 tokens · 6.1 tokens a second · 16:52
+    private var metaLine: String {
+        [message.stats, message.date?.chatStamp].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private static func fitted(_ size: CGSize, maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
+        guard size.width > 0, size.height > 0 else { return CGSize(width: maxWidth, height: maxWidth) }
+        let scale = min(maxWidth / size.width, maxHeight / size.height, 1)
+        return CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
     }
 
     private static func markdown(_ text: String) -> AttributedString {
