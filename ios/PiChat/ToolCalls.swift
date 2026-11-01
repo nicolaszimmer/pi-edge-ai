@@ -205,14 +205,15 @@ struct ToolLabel: Equatable {
 
     init(name: String, arguments: String) {
         let parameters = ToolCall(id: "", name: name, arguments: arguments).parameters
-        let short = name.split(separator: "_").last.map(String.init) ?? name
-        if short == "search", let query = parameters["query"]?.string, !query.isEmpty {
+        // Only the Pi's own web tools get web wording. Another server's
+        // "docs_search" may search anything, so it is named as it is.
+        if name == "web_search", let query = parameters["query"]?.string, !query.isEmpty {
             let q = "“\(Self.clipped(query, 60))”"
             running = "Searching the web for \(q)"
             done = "Searched the web for \(q)"
             ask = "search the web for \(q)"
             detail = nil
-        } else if short == "fetch", let url = parameters["url"]?.string, !url.isEmpty {
+        } else if name == "web_fetch", let url = parameters["url"]?.string, !url.isEmpty {
             let host = URL(string: url.contains("://") ? url : "https://" + url)?.host ?? Self.clipped(url, 40)
             running = "Reading \(host)"
             done = "Read \(host)"

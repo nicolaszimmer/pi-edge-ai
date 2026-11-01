@@ -46,9 +46,12 @@ struct ToolStepRow: View {
 
     private var icon: String {
         switch message.toolState {
-        case .done: (message.toolName ?? "").hasSuffix("fetch") ? "doc.text" : "magnifyingglass"
-        case .failed: "exclamationmark.triangle"
-        default: "minus.circle"
+        case .done:
+            if message.toolName == "web_search" { return "magnifyingglass" }
+            if message.toolName == "web_fetch" { return "doc.text" }
+            return "wrench.and.screwdriver"
+        case .failed: return "exclamationmark.triangle"
+        default: return "minus.circle"
         }
     }
 

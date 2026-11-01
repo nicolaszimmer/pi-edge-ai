@@ -113,6 +113,10 @@ check(fetch.ask == "read a page on en.wikipedia.org" && fetch.detail == "https:/
 check(ToolLabel(name: "web_fetch", arguments: #"{"url":"example.com/a"}"#).done == "Read example.com", "fetch without scheme")
 let other = ToolLabel(name: "home_lights", arguments: #"{"room":"kitchen"}"#)
 check(other.running == "Using home_lights" && other.detail == #"{"room":"kitchen"}"#, "other tool: \(other)")
+// Another server's search or fetch tool is not called web search
+let docs = ToolLabel(name: "docs_search", arguments: #"{"query":"invoices"}"#)
+check(docs.ask == "use docs_search" && docs.detail == #"{"query":"invoices"}"#, "other server's search: \(docs.ask)")
+check(ToolLabel(name: "files_fetch", arguments: #"{"url":"file:///etc/passwd"}"#).ask == "use files_fetch", "other server's fetch")
 check(ToolLabel(name: "web_search", arguments: "{}").running == "Using web_search", "search without query")
 let long = ToolLabel(name: "web_search", arguments: "{\"query\":\"\(String(repeating: "a", count: 100))\"}")
 check(long.done.count < 90 && long.done.hasSuffix("…”"), "long query clipped: \(long.done)")
