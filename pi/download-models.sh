@@ -4,6 +4,7 @@
 #   ./download-models.sh                  # Gemma 4 E2B + E4B (~8.7 GB total)
 #   ./download-models.sh e2b              # only Gemma 4 E2B (~3.5 GB)
 #   ./download-models.sh qwen3.5-4b       # Qwen 3.5 4B (~3.3 GB)
+#   ./download-models.sh ministral-3-3b   # Ministral 3 3B (~2.9 GB)
 #   ./download-models.sh --list           # all model names this script knows
 #
 # To also add a model to an installed server, use ./add-model.sh instead.
@@ -15,9 +16,11 @@
 # Per Gemma model it fetches the language model, the vision encoder (mmproj,
 # lets you send photos) and the multi-token-prediction draft head (mtp).
 #
-# Qwen 3.5 has no official Q4_0 GGUF, so it comes from Unsloth's conversions
-# (calibrated with an importance matrix). Both Unsloth repos name their vision
-# encoder mmproj-F16.gguf, so it is saved under a per-model name.
+# Qwen 3.5 and Ministral 3 have no official Q4_0 GGUF, so they come from
+# Unsloth's conversions (calibrated with an importance matrix). Unsloth names
+# every vision encoder mmproj-F16.gguf, so it is saved under a per-model name.
+# F16, not BF16: the Pi 5's Cortex-A76 has no BF16 instructions.
+# Granite 4.2 and LFM2.5 come from IBM's and Liquid AI's own GGUF repos.
 set -euo pipefail
 
 MODELS_DIR="${MODELS_DIR:-/opt/pi-llm/models}"
@@ -29,6 +32,9 @@ gemma-4-e2b  ggml-org/gemma-4-E2B-it-GGUF  gemma-4-E2B-it-Q4_0.gguf mmproj-gemma
 gemma-4-e4b  ggml-org/gemma-4-E4B-it-GGUF  gemma-4-E4B-it-Q4_0.gguf mmproj-gemma-4-E4B-it-Q8_0.gguf mtp-gemma-4-E4B-it-Q4_0.gguf
 qwen3.5-2b   unsloth/Qwen3.5-2B-GGUF       Qwen3.5-2B-Q4_0.gguf mmproj-F16.gguf=mmproj-Qwen3.5-2B-F16.gguf
 qwen3.5-4b   unsloth/Qwen3.5-4B-GGUF       Qwen3.5-4B-Q4_0.gguf mmproj-F16.gguf=mmproj-Qwen3.5-4B-F16.gguf
+ministral-3-3b  unsloth/Ministral-3-3B-Instruct-2512-GGUF  Ministral-3-3B-Instruct-2512-Q4_0.gguf mmproj-F16.gguf=mmproj-Ministral-3-3B-F16.gguf
+granite-4.2-3b  ibm-granite/granite-4.2-3b-GGUF  granite-4.2-3b-Q4_0.gguf
+lfm2.5-8b-a1b   LiquidAI/LFM2.5-8B-A1B-GGUF      LFM2.5-8B-A1B-Q4_0.gguf
 "
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }

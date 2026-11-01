@@ -69,10 +69,16 @@ bench_api() {
 bench_raw() {
     # every model in models.ini (or only the ones named on the command line)
     local files=() name path
+    # (a value ends where a ; or # comment starts, as in llama-server's own parser)
     while read -r name path; do
         if [[ $# -gt 0 && ! " $* " == *" $name "* ]]; then continue; fi
-        [[ -f "$path" ]] && files+=(-m "$path")
-    done < <(awk -F'[][]' '/^\[/ { name = $2 } $1 ~ /^model[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); print name, $0 }' "$INI")
+        if [[ -f "$path" ]]; then
+            files+=(-m "$path")
+        else
+            echo "skipping $name: $path not found" >&2
+        fi
+    done < <(awk -F'[][]' '/^\[/ { name = $2 }
+        $1 ~ /^model[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*[;#].*$/, ""); print name, $0 }' "$INI")
     [[ ${#files[@]} -gt 0 ]] || { echo "no model files found (from $INI)" >&2; exit 1; }
 
     if systemctl is-active --quiet pi-llm 2>/dev/null; then
