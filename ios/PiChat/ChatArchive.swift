@@ -194,7 +194,10 @@ extension ChatSummary {
         guard text.count > limit else { return text }
         let cut = text.prefix(limit)
         if let space = cut.lastIndex(of: " "), cut.distance(from: space, to: cut.endIndex) < 20 {
-            return cut[..<space].trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)) + "…"
+            // Only a comma, colon or the like that the cut leaves dangling goes.
+            var kept = cut[..<space].trimmingCharacters(in: .whitespaces)
+            while let last = kept.last, ",;:–—-".contains(last) { kept.removeLast() }
+            return kept.trimmingCharacters(in: .whitespaces) + "…"
         }
         return cut.trimmingCharacters(in: .whitespaces) + "…"
     }

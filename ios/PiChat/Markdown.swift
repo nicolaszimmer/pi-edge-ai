@@ -672,14 +672,15 @@ enum LaTeX {
         s = s.replacingOccurrences(of: "\\:", with: "\\>")
         // \boxed{x}, \cancel{x}: keep what is inside.
         s = s.replacingOccurrences(of: #"\\(boxed|cancel|bcancel|xcancel)(?![A-Za-z])\s*"#, with: "", options: .regularExpression)
+        // Commands with arguments, read with nested braces: \pmod{a^{2}}.
         // \pmod{n} → (mod n)
-        s = s.replacingOccurrences(of: #"\\pmod\s*\{([^}]*)\}"#, with: "\\\\ (\\\\mathrm{mod}\\\\ $1)", options: .regularExpression)
+        s = replaceArguments(s, commands: ["pmod"], count: 1) { "\\ (\\mathrm{mod}\\ \($0[0]))" }
         // \overset{a}{b}, \stackrel{a}{b} → b with a above as a script.
-        s = replaceTwoArguments(s, commands: ["overset", "stackrel"]) { a, b in "{\(b)}^{\(a)}" }
-        s = replaceTwoArguments(s, commands: ["underset"]) { a, b in "{\(b)}_{\(a)}" }
+        s = replaceArguments(s, commands: ["overset", "stackrel"], count: 2) { "{\($0[1])}^{\($0[0])}" }
+        s = replaceArguments(s, commands: ["underset"], count: 2) { "{\($0[1])}_{\($0[0])}" }
         // \xrightarrow{f} → an arrow with f above.
-        s = s.replacingOccurrences(of: #"\\xrightarrow\s*\{([^}]*)\}"#, with: "\\\\rightarrow^{$1}", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"\\xleftarrow\s*\{([^}]*)\}"#, with: "\\\\leftarrow^{$1}", options: .regularExpression)
+        s = replaceArguments(s, commands: ["xrightarrow"], count: 1) { "\\rightarrow^{\($0[0])}" }
+        s = replaceArguments(s, commands: ["xleftarrow"], count: 1) { "\\leftarrow^{\($0[0])}" }
 
         // Unicode the math font has but the reader would skip, and primes,
         // which it does not read either: f'(x), f''(x), f′(x).
@@ -761,8 +762,8 @@ enum LaTeX {
         return s
     }
 
-    /// Rewrites \command{a}{b}, with nested braces in a and b.
-    private static func replaceTwoArguments(_ s: String, commands: [String], _ make: (String, String) -> String) -> String {
+    /// Rewrites \command{a} or \command{a}{b}, with nested braces in the arguments.
+    private static func replaceArguments(_ s: String, commands: [String], count: Int, _ make: ([String]) -> String) -> String {
         var s = s
         for command in commands {
             let token = "\\\(command)"
@@ -775,13 +776,18 @@ enum LaTeX {
                     offset = start + token.count
                     continue
                 }
-                guard let (a, afterA) = group(in: s, from: r.upperBound),
-                      let (b, afterB) = group(in: s, from: afterA) else {
+                var arguments: [String] = []
+                var end = r.upperBound
+                while arguments.count < count, let (argument, after) = group(in: s, from: end) {
+                    arguments.append(argument)
+                    end = after
+                }
+                guard arguments.count == count else {
                     offset = start + token.count
                     continue
                 }
-                s.replaceSubrange(r.lowerBound..<afterB, with: make(a, b))
-                // Look again from here, for one written inside a or b.
+                s.replaceSubrange(r.lowerBound..<end, with: make(arguments))
+                // Look again from here, for one written inside an argument.
                 offset = start
             }
         }
