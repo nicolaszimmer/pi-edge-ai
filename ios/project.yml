@@ -10,12 +10,19 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
+packages:
+  # Typesets the LaTeX maths in answers (MIT licence)
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath
+    minorVersion: 1.7.3
 targets:
   PiChat:
     type: application
     platform: iOS
     sources:
       - path: PiChat
+    dependencies:
+      - package: SwiftMath
     settings:
       base:
         # Must be unique for your Apple ID, change "example" to your name

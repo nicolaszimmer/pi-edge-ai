@@ -3,15 +3,18 @@
 A small SwiftUI chat app for the Gemma server on your Pi:
 
 - streams answers token by token, with tokens/s shown under each reply
+- renders answers properly: headings, lists, tables, quotes, code blocks, and LaTeX maths, inline (`$a^2$`, `\(…\)`) and on its own line (`$$…$$`, `\[…\]`), typeset with [SwiftMath](https://github.com/mgriebling/SwiftMath)
+- keeps every chat: tap the clock icon to see them all by day, search them, open one, or swipe to rename or delete it. Tap the pencil icon for a new chat. An answer keeps arriving while you look at another chat
 - model picker (E2B / E4B) and an optional **Thinking** toggle
 - attach a photo and ask about it (Gemma 4 is multimodal); photos are downscaled to 1024 px first to keep the Pi fast
-- remembers the conversation; tap the pencil icon for a new chat
 - tap the title to switch model or turn Thinking on for the next question
 - talks to the standard OpenAI-compatible `/v1/chat/completions` API, so it also works with other llama.cpp or OpenAI-style servers
 
 The look follows the Rapid Review design system: ink for every control, electric blue only for the assistant's mark, the focused message box and the chosen model, Instrument Sans for text and JetBrains Mono for model names, in light and dark. The tokens are in `PiChat/Theme.swift`, the shared controls in `PiChat/Components.swift`, and both fonts ship in `PiChat/Fonts` (SIL Open Font License, licences beside them).
 
-The app is about 1,600 lines of Swift with no dependencies. It needs iOS 17 and a Mac with Xcode 15 or newer.
+The app is about 3,400 lines of Swift. Its one dependency is SwiftMath (MIT licence), which Xcode fetches through Swift Package Manager. It needs iOS 17 and a Mac with Xcode 15 or newer.
+
+Chats are saved on the phone, one file per chat in the app's Documents folder (`Chats/`). The single conversation older versions kept is moved there as the first chat on the first launch.
 
 > I wrote this code without being able to compile it (no Xcode where it was written). If Xcode reports an error, paste it into a chat with Claude and it will be quick to fix.
 
@@ -30,9 +33,10 @@ open PiChat.xcodeproj
 
 1. **File > New > Project > iOS > App.** Name it `PiChat`, Interface **SwiftUI**, Storage **None**.
 2. Delete the generated `ContentView.swift` and `PiChatApp.swift`.
-3. Drag the seven `.swift` files and the `Fonts` folder from `ios/PiChat/` into the project (check "Copy items if needed" and the PiChat target). The app registers the fonts itself, so no Info.plist entry is needed.
-4. Target **PiChat > General**: set *Minimum Deployments* to iOS 17.0.
-5. Target **PiChat > Info**, add two keys:
+3. Drag the `.swift` files and the `Fonts` folder from `ios/PiChat/` into the project (check "Copy items if needed" and the PiChat target). The app registers the fonts itself, so no Info.plist entry is needed.
+4. **File > Add Package Dependencies…**, enter `https://github.com/mgriebling/SwiftMath`, choose *Up to Next Minor Version* from `1.7.3`, and add the `SwiftMath` library to the PiChat target.
+5. Target **PiChat > General**: set *Minimum Deployments* to iOS 17.0.
+6. Target **PiChat > Info**, add two keys:
    - `App Transport Security Settings` > `Allow Arbitrary Loads` = `YES` (the Pi serves plain HTTP on your LAN)
    - `Privacy - Local Network Usage Description` = `Pi Chat talks to the model on your Raspberry Pi.`
 

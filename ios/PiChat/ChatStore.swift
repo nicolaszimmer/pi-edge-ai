@@ -8,29 +8,24 @@ enum SettingsKey {
     static let model = "model"
     static let systemPrompt = "systemPrompt"
     static let thinking = "thinking"
+    /// The chat that was open, to open it again at the next launch.
+    static let currentChat = "currentChat"
 
     static let defaultServerURL = "http://pi-llm.local:8080"
-}
-
-struct ChatMessage: Identifiable, Codable, Equatable {
-    enum Role: String, Codable { case user, assistant }
-
-    var id = UUID()
-    var role: Role
-    var text: String
-    var reasoning: String = ""
-    var imageJPEG: Data? = nil
-    var stats: String? = nil
-    var isError: Bool = false
-    /// When it was sent or answered (nil for chats saved before this was kept).
-    var date: Date? = Date()
 }
 
 @MainActor
 @Observable
 final class ChatStore {
-    var messages: [ChatMessage] = []
-    var isGenerating = false
+    /// Every saved chat, the most recent first.
+    private(set) var chats: [ChatSummary] = []
+    /// The chat on screen. Nil for a new chat, which is saved once something is asked.
+    private(set) var currentChatID: UUID?
+    /// The messages of the chat on screen.
+    private(set) var messages: [ChatMessage] = []
+    private(set) var isGenerating = false
+    /// The chat the Pi is answering in. Opening another chat does not stop it.
+    private(set) var generatingChatID: UUID?
     var models: [LlamaClient.ModelInfo] = []
     var connectionError: String?
     /// True when the last connection error was the network (no answer at all),
@@ -39,16 +34,34 @@ final class ChatStore {
 
     @ObservationIgnored private var generation: Task<Void, Never>?
     @ObservationIgnored private var generationID = UUID()
+    /// The messages of a chat still being answered while another is on screen.
+    @ObservationIgnored private var background: [UUID: [ChatMessage]] = [:]
+    private let archive = ChatArchive.standard
     private let defaults = UserDefaults.standard
 
-    private static var saveURL: URL { URL.documentsDirectory.appending(path: "chat.json") }
-
     init() {
-        if let data = try? Data(contentsOf: Self.saveURL),
-           let saved = try? JSONDecoder().decode([ChatMessage].self, from: data) {
-            messages = saved
+        chats = archive.loadIndex()
+        if chats.isEmpty,
+           let imported = archive.importSingleChat(from: URL.documentsDirectory.appending(path: "chat.json")) {
+            chats = [imported]
+            archive.saveIndex(chats)
+            defaults.set(imported.id.uuidString, forKey: SettingsKey.currentChat)
+        }
+        // Open the chat that was open last time.
+        if let raw = defaults.string(forKey: SettingsKey.currentChat),
+           let id = UUID(uuidString: raw),
+           chats.contains(where: { $0.id == id }),
+           let saved = archive.load(id) {
+            currentChatID = id
+            messages = saved.messages
         }
     }
+
+    /// True while the Pi answers in the chat on screen.
+    var isGeneratingHere: Bool { isGenerating && generatingChatID == currentChatID }
+
+    /// True while the Pi answers in a chat that is not on screen.
+    var isBusyElsewhere: Bool { isGenerating && generatingChatID != currentChatID }
 
     var selectedModel: String { defaults.string(forKey: SettingsKey.model) ?? "" }
 
@@ -85,6 +98,8 @@ final class ChatStore {
         }
     }
 
+    // MARK: Asking
+
     func send(_ text: String, image: Data?) {
         guard !isGenerating else { return }
         guard let client = makeClient() else {
@@ -93,7 +108,12 @@ final class ChatStore {
             return
         }
 
+        let chatID = currentChatID ?? startChat(question: text, hasPhoto: image != nil)
         messages.append(ChatMessage(role: .user, text: text, imageJPEG: image))
+        moveToTop(chatID)
+        // Saved now, so the question is kept even if the app closes mid-answer.
+        saveChat(chatID)
+
         let wire = wireHistory()
         let reply = ChatMessage(role: .assistant, text: "")
         messages.append(reply)
@@ -102,6 +122,7 @@ final class ChatStore {
         let thinking = defaults.bool(forKey: SettingsKey.thinking)
         let id = UUID()
         generationID = id
+        generatingChatID = chatID
         isGenerating = true
 
         generation = Task {
@@ -109,23 +130,27 @@ final class ChatStore {
                 for try await event in client.streamChat(model: model, messages: wire, thinking: thinking) {
                     switch event {
                     case .content(let piece):
-                        update(reply.id) { $0.text += piece }
+                        update(chatID, reply.id) { $0.text += piece }
                     case .reasoning(let piece):
-                        update(reply.id) { $0.reasoning += piece }
+                        update(chatID, reply.id) { $0.reasoning += piece }
                     case .done(let timings):
-                        update(reply.id) { $0.stats = Self.format(timings) }
+                        update(chatID, reply.id) { $0.stats = Self.format(timings) }
                     }
                 }
             } catch {
                 if !Task.isCancelled && (error as? URLError)?.code != .cancelled {
-                    update(reply.id) {
+                    update(chatID, reply.id) {
                         $0.isError = true
                         $0.text += ($0.text.isEmpty ? "" : "\n\n") + error.localizedDescription
                     }
                 }
             }
-            if generationID == id { isGenerating = false }
-            save()
+            if generationID == id {
+                isGenerating = false
+                generatingChatID = nil
+            }
+            saveChat(chatID)
+            if generatingChatID != chatID { background[chatID] = nil }
         }
     }
 
@@ -134,16 +159,108 @@ final class ChatStore {
         generation = nil
         generationID = UUID()
         isGenerating = false
-        save()
+        if let id = generatingChatID {
+            generatingChatID = nil
+            saveChat(id)
+            background[id] = nil
+        }
     }
 
+    // MARK: Chats
+
+    /// An empty chat. The one on screen is kept, and keeps being answered.
     func newChat() {
-        stop()
-        messages.removeAll()
-        save()
+        leaveCurrentChat()
+        currentChatID = nil
+        messages = []
+        defaults.removeObject(forKey: SettingsKey.currentChat)
+    }
+
+    func open(_ id: UUID) {
+        guard id != currentChatID else { return }
+        leaveCurrentChat()
+        if let answering = background.removeValue(forKey: id) {
+            messages = answering
+        } else {
+            messages = archive.load(id)?.messages ?? []
+        }
+        currentChatID = id
+        defaults.set(id.uuidString, forKey: SettingsKey.currentChat)
+    }
+
+    func rename(_ id: UUID, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let i = chats.firstIndex(where: { $0.id == id }) else { return }
+        chats[i].title = title
+        if id == currentChatID || background[id] != nil {
+            saveChat(id)
+        } else if var saved = archive.load(id) {
+            saved.summary = chats[i]
+            archive.save(saved)
+            archive.saveIndex(chats)
+        }
+    }
+
+    func delete(_ id: UUID) {
+        if id == generatingChatID { stop() }
+        background[id] = nil
+        chats.removeAll { $0.id == id }
+        archive.delete(id)
+        archive.saveIndex(chats)
+        if id == currentChatID {
+            currentChatID = nil
+            messages = []
+            defaults.removeObject(forKey: SettingsKey.currentChat)
+        }
     }
 
     // MARK: Private
+
+    /// Keeps the messages of the chat on screen in memory while it is still
+    /// being answered, so the rest of the answer has somewhere to go.
+    private func leaveCurrentChat() {
+        if let id = currentChatID, isGenerating, generatingChatID == id {
+            background[id] = messages
+        }
+    }
+
+    private func startChat(question: String, hasPhoto: Bool) -> UUID {
+        let now = Date()
+        let summary = ChatSummary(
+            id: UUID(),
+            title: ChatSummary.title(question: question, hasPhoto: hasPhoto),
+            preview: "",
+            created: now,
+            updated: now
+        )
+        chats.insert(summary, at: 0)
+        currentChatID = summary.id
+        defaults.set(summary.id.uuidString, forKey: SettingsKey.currentChat)
+        return summary.id
+    }
+
+    private func moveToTop(_ id: UUID) {
+        guard let i = chats.firstIndex(where: { $0.id == id }) else { return }
+        var summary = chats.remove(at: i)
+        summary.updated = Date()
+        chats.insert(summary, at: 0)
+    }
+
+    /// Writes a chat to disk, from the screen or from the background.
+    private func saveChat(_ id: UUID) {
+        let list: [ChatMessage]
+        if id == currentChatID {
+            list = messages
+        } else if let answering = background[id] {
+            list = answering
+        } else {
+            return
+        }
+        guard let i = chats.firstIndex(where: { $0.id == id }) else { return }
+        chats[i].preview = ChatSummary.preview(for: list)
+        archive.save(SavedChat(summary: chats[i], messages: list))
+        archive.saveIndex(chats)
+    }
 
     /// Conversation as sent to the server: optional system prompt + all
     /// successful turns (the API is stateless, the server caches the prefix).
@@ -160,13 +277,15 @@ final class ChatStore {
         return wire
     }
 
-    private func update(_ id: UUID, _ change: (inout ChatMessage) -> Void) {
-        guard let i = messages.firstIndex(where: { $0.id == id }) else { return }
-        change(&messages[i])
-    }
-
-    private func save() {
-        try? JSONEncoder().encode(messages).write(to: Self.saveURL, options: .atomic)
+    /// Changes a message of the chat being answered, on screen or not.
+    private func update(_ chatID: UUID, _ messageID: UUID, _ change: (inout ChatMessage) -> Void) {
+        if chatID == currentChatID {
+            guard let i = messages.firstIndex(where: { $0.id == messageID }) else { return }
+            change(&messages[i])
+        } else if var list = background[chatID], let i = list.firstIndex(where: { $0.id == messageID }) {
+            change(&list[i])
+            background[chatID] = list
+        }
     }
 
     private static func format(_ t: LlamaClient.Timings?) -> String? {

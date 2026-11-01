@@ -23,9 +23,16 @@ enum Theme {
 
     // MARK: Text
 
-    static let text = Color(light: 0x14161A, dark: 0xE9EBEE)
+    static let text = Color(light: textInk.light, dark: textInk.dark)
     static let text2 = Color(light: 0x454B54, dark: 0xB4BAC3)
     static let text3 = Color(light: 0x646B76, dark: 0x8D949E)
+
+    private static let textInk: (light: UInt32, dark: UInt32) = (0x14161A, 0xE9EBEE)
+
+    /// The text colour for maths, which is drawn into images in one appearance at a time.
+    static func mathInk(dark: Bool) -> UIColor {
+        UIColor(rgb: dark ? textInk.dark : textInk.light)
+    }
 
     // MARK: Ink: every control
 
