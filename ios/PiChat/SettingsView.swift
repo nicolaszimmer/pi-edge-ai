@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.model) private var model = ""
     @AppStorage(SettingsKey.systemPrompt) private var systemPrompt = ""
     @AppStorage(SettingsKey.thinking) private var thinking = false
+    @AppStorage(SettingsKey.tools) private var tools = false
+    @AppStorage(SettingsKey.toolsAlwaysAllowed) private var toolsAlwaysAllowed = false
 
     @State private var testing = false
     @State private var testResult: TestResult?
@@ -26,6 +28,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     serverPanel
                     modelPanel
+                    toolsPanel
                     promptPanel
                 }
                 .padding(.horizontal, 16)
@@ -137,6 +140,43 @@ struct SettingsView: View {
                 isOn: $thinking
             )
         }
+    }
+
+    // MARK: Tools
+
+    private var toolsPanel: some View {
+        panel("Tools") {
+            SwitchRow(
+                title: "Web search and other tools",
+                note: "Lets the model use the tools your Pi offers, such as web search. Searches and the pages it reads go out to the internet; your chat stays on the Pi.",
+                isOn: $tools
+            )
+            if tools {
+                if store.serverTools.isEmpty {
+                    (Text("The Pi offers no tools yet. To add web search, run ")
+                        + Text("./web-search.sh on").font(Theme.mono(12))
+                        + Text(" on the Pi, then test the connection here."))
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(Self.toolsSentence(store.serverTools.filter(\.isReadOnly).map(\.tool)))
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                SwitchRow(
+                    title: "Ask before each use",
+                    note: "Shows what the model wants to look up and waits for your OK.",
+                    isOn: Binding(get: { !toolsAlwaysAllowed }, set: { toolsAlwaysAllowed = !$0 })
+                )
+            }
+        }
+    }
+
+    /// "The Pi offers web_search and web_fetch."
+    private static func toolsSentence(_ names: [String]) -> String {
+        names.isEmpty ? "The Pi offers no tools the app can use." : "The Pi offers \(names.formatted(.list(type: .and)))."
     }
 
     // MARK: System prompt

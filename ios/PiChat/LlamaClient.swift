@@ -1,128 +1,13 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking  // Linux, where ios/Tests runs this file against a real server
+#endif
 
-/// Minimal client for llama-server's OpenAI-compatible API.
+/// Minimal client for llama-server's OpenAI-compatible API. The JSON it sends
+/// and reads is in LlamaWire.swift.
 struct LlamaClient: Sendable {
     let baseURL: URL
     let apiKey: String
-
-    // MARK: Types
-
-    struct ModelInfo: Decodable, Identifiable, Hashable, Sendable {
-        struct Status: Decodable, Hashable, Sendable { let value: String? }
-        let id: String
-        let status: Status?
-    }
-
-    struct Timings: Decodable, Sendable {
-        let prompt_n: Int?
-        let prompt_per_second: Double?
-        let predicted_n: Int?
-        let predicted_per_second: Double?
-    }
-
-    enum StreamEvent: Sendable {
-        case content(String)
-        case reasoning(String)
-        case done(Timings?)
-    }
-
-    /// One chat message as sent to the server. Images are sent inline as
-    /// base64 data URLs, which llama-server passes to Gemma's vision encoder.
-    struct WireMessage: Encodable, Sendable {
-        let role: String
-        let text: String
-        var imageJPEG: Data? = nil
-
-        private struct Part: Encodable {
-            struct ImageURL: Encodable { let url: String }
-            let type: String
-            var text: String? = nil
-            var image_url: ImageURL? = nil
-        }
-
-        private enum CodingKeys: String, CodingKey { case role, content }
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(role, forKey: .role)
-            if let imageJPEG {
-                var parts: [Part] = []
-                if !text.isEmpty { parts.append(Part(type: "text", text: text)) }
-                let dataURL = "data:image/jpeg;base64," + imageJPEG.base64EncodedString()
-                parts.append(Part(type: "image_url", image_url: .init(url: dataURL)))
-                try container.encode(parts, forKey: .content)
-            } else {
-                try container.encode(text, forKey: .content)
-            }
-        }
-    }
-
-    enum ClientError: LocalizedError {
-        case http(Int, String)
-
-        var errorDescription: String? {
-            switch self {
-            case .http(401, _): return "Wrong API key (HTTP 401). Check Settings."
-            case .http(let code, let message): return "Server error \(code): \(message)"
-            }
-        }
-    }
-
-    private struct ChatRequest: Encodable {
-        let model: String
-        let messages: [WireMessage]
-        let stream = true
-        let chat_template_kwargs: [String: Bool]
-    }
-
-    private struct ModelList: Decodable { let data: [ModelInfo] }
-
-    private struct ErrorBody: Decodable {
-        struct Detail: Decodable { let message: String }
-        let error: Detail
-    }
-
-    struct Chunk: Decodable {
-        struct Choice: Decodable { let delta: Delta? }
-        struct Delta: Decodable {
-            let content: String?
-            let reasoning_content: String?
-        }
-        let choices: [Choice]?
-        let timings: Timings?
-    }
-
-    enum SSELine {
-        case chunk(Chunk)
-        case error(String)
-        case done
-    }
-
-    // MARK: Helpers
-
-    /// Accepts "pi-llm.local:8080", "http://pi-llm.local:8080/", ".../v1".
-    static func normalizedBaseURL(_ raw: String) -> URL? {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
-        if !s.contains("://") { s = "http://" + s }
-        while s.hasSuffix("/") { s.removeLast() }
-        if s.hasSuffix("/v1") { s.removeLast(3) }
-        guard let url = URL(string: s), url.host != nil else { return nil }
-        return url
-    }
-
-    /// Parses one line of the server-sent-events stream.
-    static func parseSSELine(_ line: String) -> SSELine? {
-        guard line.hasPrefix("data:") else { return nil }
-        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-        if payload == "[DONE]" { return .done }
-        guard let data = payload.data(using: .utf8) else { return nil }
-        if let err = try? JSONDecoder().decode(ErrorBody.self, from: data) {
-            return .error(err.error.message)
-        }
-        guard let chunk = try? JSONDecoder().decode(Chunk.self, from: data) else { return nil }
-        return .chunk(chunk)
-    }
 
     private func makeRequest(_ path: String) -> URLRequest {
         var request = URLRequest(url: baseURL.appending(path: path))
@@ -149,8 +34,37 @@ struct LlamaClient: Sendable {
         return try JSONDecoder().decode(ModelList.self, from: data).data
     }
 
-    /// Streams a chat completion token by token.
-    func streamChat(model: String, messages: [WireMessage], thinking: Bool) -> AsyncThrowingStream<StreamEvent, Error> {
+    /// The tools the server offers (GET /tools), such as web_search. Empty when
+    /// it offers none: llama-server answers 403 then.
+    func tools() async throws -> [ServerTool] {
+        var request = makeRequest("tools")
+        request.timeoutInterval = 10
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 403 || http.statusCode == 404 {
+            return []
+        }
+        try Self.check(response, data)
+        return try JSONDecoder().decode([ServerTool].self, from: data)
+    }
+
+    /// Runs one tool on the server (POST /tools) and returns its result as the
+    /// text the model gets. A tool that ran but failed comes back with `failed`.
+    func callTool(_ call: ToolCall) async throws -> (text: String, failed: Bool) {
+        var request = makeRequest("tools")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The Pi gives a tool up to 60 s (mcp.json); reading a page takes up to 25.
+        request.timeoutInterval = 90
+        request.httpBody = try JSONEncoder().encode(ToolRequest(tool: call.name, params: call.parameters))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(response, data)
+        return ToolResult.text(from: data)
+    }
+
+    /// Streams a chat completion token by token. With `tools`, the model may
+    /// answer with tool calls instead, which arrive as one `.toolCalls` event
+    /// just before `.done`.
+    func streamChat(model: String, messages: [WireMessage], thinking: Bool, tools: [JSONValue] = []) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -163,7 +77,8 @@ struct LlamaClient: Sendable {
                     request.httpBody = try JSONEncoder().encode(ChatRequest(
                         model: model,
                         messages: messages,
-                        chat_template_kwargs: ["enable_thinking": thinking]
+                        chat_template_kwargs: ["enable_thinking": thinking],
+                        tools: tools.isEmpty ? nil : tools
                     ))
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -174,6 +89,7 @@ struct LlamaClient: Sendable {
                     }
 
                     var timings: Timings?
+                    var calls = ToolCallAccumulator()
                     stream: for try await line in bytes.lines {
                         switch Self.parseSSELine(line) {
                         case .chunk(let chunk):
@@ -181,6 +97,7 @@ struct LlamaClient: Sendable {
                             if let delta = chunk.choices?.first?.delta {
                                 if let r = delta.reasoning_content, !r.isEmpty { continuation.yield(.reasoning(r)) }
                                 if let c = delta.content, !c.isEmpty { continuation.yield(.content(c)) }
+                                if let pieces = delta.tool_calls { calls.add(pieces) }
                             }
                         case .error(let message):
                             throw ClientError.http(500, message)
@@ -190,6 +107,8 @@ struct LlamaClient: Sendable {
                             continue
                         }
                     }
+                    let finished = calls.result
+                    if !finished.isEmpty { continuation.yield(.toolCalls(finished)) }
                     continuation.yield(.done(timings))
                     continuation.finish()
                 } catch {

@@ -5,6 +5,7 @@ struct ChatView: View {
     @Environment(ChatStore.self) private var store
     @AppStorage(SettingsKey.model) private var model = ""
     @AppStorage(SettingsKey.thinking) private var thinking = false
+    @AppStorage(SettingsKey.tools) private var toolsOn = false
     @State private var draft = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingImage: Data?
@@ -17,10 +18,11 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(store.messages) { message in
+                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
                         MessageRow(
                             message: message,
-                            isStreaming: store.isGeneratingHere && message.id == store.messages.last?.id
+                            isStreaming: store.isGeneratingHere && message.id == store.messages.last?.id,
+                            afterTool: index > 0 && store.messages[index - 1].role == .tool
                         )
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -176,6 +178,12 @@ struct ChatView: View {
                     .foregroundStyle(Theme.text2)
             }
             VStack(spacing: 8) {
+                if toolsActive {
+                    starter("Look something up on the web") {
+                        draft = "Search the web: "
+                        composerFocused = true
+                    }
+                }
                 starter("Describe what is in a photo") {
                     draft = "Describe what is in this photo."
                     showPhotoPicker = true
@@ -291,7 +299,9 @@ struct ChatView: View {
                     .accessibilityLabel("Send")
                 }
             }
-            Text("Gemma runs on your Pi. Nothing you send leaves your home network.")
+            Text(toolsActive
+                 ? "Your chat stays on the Pi. Web searches and the pages the model reads go out to the internet."
+                 : "Gemma runs on your Pi. Nothing you send leaves your home network.")
                 .font(Theme.sans(12))
                 .foregroundStyle(Theme.text3)
                 .multilineTextAlignment(.center)
@@ -332,7 +342,9 @@ struct ChatView: View {
     private var busyElsewhere: some View {
         let title = store.chats.first { $0.id == store.generatingChatID }?.title ?? "another chat"
         return HStack(spacing: 8) {
-            Text("Still answering in “\(title)”. You can ask here once it is done.")
+            Text(store.toolStepAwaitingApproval == nil
+                 ? "Still answering in “\(title)”. You can ask here once it is done."
+                 : "“\(title)” waits for you to allow a tool. You can ask here once it is done.")
                 .font(Theme.sans(13))
                 .foregroundStyle(Theme.text2)
                 .lineLimit(2)
@@ -344,6 +356,9 @@ struct ChatView: View {
             .buttonStyle(.ds(.ghost, height: 32))
         }
     }
+
+    /// Tools on in Settings, and the Pi offers some.
+    private var toolsActive: Bool { toolsOn && !store.serverTools.isEmpty }
 
     private var canSend: Bool {
         !store.isGenerating
@@ -378,12 +393,19 @@ struct ChatView: View {
 struct MessageRow: View {
     let message: ChatMessage
     let isStreaming: Bool
+    /// Comes right after a tool step: the model is reading what the tool found.
+    var afterTool = false
 
     var body: some View {
-        if message.role == .user {
+        switch message.role {
+        case .user:
             userTurn
-        } else {
-            assistantTurn
+        case .tool:
+            ToolStepRow(message: message, isActive: isStreaming)
+        case .assistant:
+            if !message.isToolRequestOnly {
+                assistantTurn
+            }
         }
     }
 
@@ -441,7 +463,9 @@ struct MessageRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if isStreaming {
                 WaitingRow(message.reasoning.isEmpty
-                    ? "Reading your message. The first words can take a while on a Pi."
+                    ? (afterTool
+                        ? "Reading what it found. This can take a while on a Pi."
+                        : "Reading your message. The first words can take a while on a Pi.")
                     : "Thinking. The answer follows once it is done.")
             }
             if !isStreaming && !message.isError && !message.text.isEmpty {
