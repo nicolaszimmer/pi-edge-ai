@@ -59,11 +59,13 @@ struct ToolStepRow: View {
                 .font(Theme.body)
                 .foregroundStyle(Theme.text)
                 .fixedSize(horizontal: false, vertical: true)
+            // In full: the model picks the address (or input), and a long
+            // one can carry more than its start shows.
             if let detail = label.detail {
                 Text(detail)
                     .font(Theme.mono(12))
                     .foregroundStyle(Theme.text2)
-                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             Text("It goes out to the internet through your Pi. Your chat stays on the Pi.")

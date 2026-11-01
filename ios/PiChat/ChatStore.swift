@@ -14,6 +14,8 @@ enum SettingsKey {
     static let tools = "tools"
     /// The tools that run without asking first, by name ("Always allow").
     static let toolsAllowed = "toolsAllowed"
+    /// Each tool the person switched on or off in Settings, by name.
+    static let toolChoices = "toolChoices"
 
     static let defaultServerURL = "http://pi-llm.local:8080"
 }
@@ -42,6 +44,9 @@ final class ChatStore {
     /// The tools that run without asking, because the person chose Always
     /// allow for each of them. A tool added to the Pi later still asks.
     private(set) var alwaysAllowedTools: [String] = []
+    /// The tools the person switched on or off in Settings. A tool not in it
+    /// is on only if it is one of the Pi's web tools (ServerTool.isOnByDefault).
+    private(set) var toolChoices: [String: Bool] = [:]
 
     /// The answer to "The model wants to search the web for …".
     enum ToolDecision { case allow, alwaysAllow, deny }
@@ -63,6 +68,7 @@ final class ChatStore {
         self.archive = archive
         self.defaults = defaults
         alwaysAllowedTools = defaults.stringArray(forKey: SettingsKey.toolsAllowed) ?? []
+        toolChoices = defaults.dictionary(forKey: SettingsKey.toolChoices) as? [String: Bool] ?? [:]
         chats = archive.loadIndex()
         if chats.isEmpty, let imported = archive.importSingleChat(from: archive.singleChatFile) {
             chats = [imported]
@@ -234,6 +240,20 @@ final class ChatStore {
         defaults.removeObject(forKey: SettingsKey.toolsAllowed)
     }
 
+    /// The tools the Pi offers that the app can use, each with its own switch in Settings.
+    var usableTools: [ServerTool] { serverTools.filter(\.isUsableByApp) }
+
+    /// The tools the model gets: the usable ones that are switched on.
+    var toolsForModel: [ServerTool] { usableTools.filter(isSwitchedOn) }
+
+    func isSwitchedOn(_ tool: ServerTool) -> Bool { toolChoices[tool.tool] ?? tool.isOnByDefault }
+
+    /// The person's switch for one tool in Settings.
+    func setTool(_ name: String, on: Bool) {
+        toolChoices[name] = on
+        defaults.set(toolChoices, forKey: SettingsKey.toolChoices)
+    }
+
     // MARK: Chats
 
     /// An empty chat. The one on screen is kept, and keeps being answered.
@@ -330,12 +350,11 @@ final class ChatStore {
         archive.saveIndex(chats)
     }
 
-    /// The tools the app offers the model (see ServerTool.isOfferedByApp),
-    /// asked for fresh, so switching web search on at the Pi works without a
-    /// restart here.
+    /// The tools the app offers the model (see toolsForModel), asked for
+    /// fresh, so switching web search on at the Pi works without a restart here.
     private func offeredTools(_ client: LlamaClient) async -> [ServerTool] {
         if let fresh = try? await client.tools() { serverTools = fresh }
-        return serverTools.filter(\.isOfferedByApp)
+        return toolsForModel
     }
 
     /// One tool step: shown in the chat, asked about unless always allowed,

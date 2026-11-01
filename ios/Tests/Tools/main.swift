@@ -14,18 +14,20 @@ let fixtures = URL(fileURLWithPath: CommandLine.arguments[1])
 let toolsData = try! Data(contentsOf: fixtures.appendingPathComponent("tools.json"))
 let tools = try! JSONDecoder().decode([ServerTool].self, from: toolsData)
 check(tools.map(\.tool) == ["web_search", "web_fetch"], "tool names: \(tools.map(\.tool))")
-check(tools.allSatisfy(\.isOfferedByApp), "the Pi's MCP tools are offered")
+check(tools.allSatisfy { $0.isUsableByApp && $0.isOnByDefault }, "the Pi's web tools are usable and on")
 check(tools[0].definition["function"]?["name"]?.string == "web_search", "definition name")
 let original = (try! JSONSerialization.jsonObject(with: toolsData) as! [[String: Any]]).map { $0["definition"]! }
 check(NSArray(array: json(tools.map(\.definition)) as! [Any]).isEqual(to: original), "definitions round-trip unchanged")
 let writer = try! JSONDecoder().decode(ServerTool.self, from: Data(#"{"tool":"write_file","permissions":{"write":true},"definition":{}}"#.utf8))
-check(!writer.isOfferedByApp, "a tool that writes is not offered")
+check(!writer.isUsableByApp, "a tool that writes is not usable")
 for raw in [#"{"tool":"read_file","type":"server","permissions":{"write":false},"definition":{}}"#,
             #"{"tool":"mystery","type":"mcp","definition":{}}"#,
             #"{"tool":"mystery","type":"mcp","permissions":{},"definition":{}}"#] {
     let t = try! JSONDecoder().decode(ServerTool.self, from: Data(raw.utf8))
-    check(!t.isOfferedByApp, "not offered: \(raw)")
+    check(!t.isUsableByApp, "not usable: \(raw)")
 }
+let otherMCP = try! JSONDecoder().decode(ServerTool.self, from: Data(#"{"tool":"notes_write","type":"mcp","permissions":{"write":false},"definition":{}}"#.utf8))
+check(otherMCP.isUsableByApp && !otherMCP.isOnByDefault, "another MCP server's tool: usable, but off to begin with")
 
 // JSONValue keeps every kind of value
 let mixed = #"{"a":null,"b":true,"c":3,"d":2.5,"e":"x","f":[1,"y",false],"g":{"h":{}}}"#

@@ -357,8 +357,8 @@ struct ChatView: View {
         }
     }
 
-    /// Tools on in Settings, and the Pi offers some.
-    private var toolsActive: Bool { toolsOn && !store.serverTools.isEmpty }
+    /// Tools on in Settings, and at least one the Pi offers is switched on.
+    private var toolsActive: Bool { toolsOn && !store.toolsForModel.isEmpty }
 
     private var canSend: Bool {
         !store.isGenerating

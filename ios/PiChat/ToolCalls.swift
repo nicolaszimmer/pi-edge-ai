@@ -67,15 +67,23 @@ struct ServerTool: Decodable, Equatable, Sendable {
     /// The OpenAI-style definition the model gets to see.
     let definition: JSONValue
 
-    /// The app offers the model only tools from MCP servers in the Pi's
+    /// The app can offer the model only tools from MCP servers in the Pi's
     /// mcp.json (such as web search), and only when the server says they don't
     /// write. llama-server's own file and shell tools (`--tools`) are never
     /// offered, and a tool that doesn't say is left out too.
     ///
     /// llama-server marks every MCP tool as not writing, whatever the tool
-    /// does, so this is no promise that it only reads: each tool still asks
-    /// before it runs, unless the person chose Always allow for that one.
-    var isOfferedByApp: Bool { type == "mcp" && permissions?["write"] == false }
+    /// does, so this is no promise that it only reads. That is why only the
+    /// Pi's own web tools are switched on to begin with (`isOnByDefault`), any
+    /// other tool waits until the person switches it on in Settings, and each
+    /// one still asks before it runs, unless the person chose Always allow.
+    var isUsableByApp: Bool { type == "mcp" && permissions?["write"] == false }
+
+    /// The tools of the Pi's own web-search server (`./web-search.sh on`).
+    static let piWebTools: Set<String> = ["web_search", "web_fetch"]
+
+    /// On until the person switches it off: the Pi's web search and page reading.
+    var isOnByDefault: Bool { Self.piWebTools.contains(tool) }
 }
 
 /// A tool call, written the OpenAI way:

@@ -158,11 +158,20 @@ struct SettingsView: View {
                         .font(Theme.sans(12))
                         .foregroundStyle(Theme.text3)
                         .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(Self.toolsSentence(store.serverTools.filter(\.isOfferedByApp).map(\.tool)))
+                } else if store.usableTools.isEmpty {
+                    Text("The Pi offers no tools the app can use.")
                         .font(Theme.sans(12))
                         .foregroundStyle(Theme.text3)
                         .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(store.usableTools, id: \.tool) { tool in
+                        let row = Self.toolRow(tool)
+                        SwitchRow(
+                            title: row.title,
+                            note: row.note,
+                            isOn: Binding(get: { store.isSwitchedOn(tool) }, set: { store.setTool(tool.tool, on: $0) })
+                        )
+                    }
                 }
                 if store.alwaysAllowedTools.isEmpty {
                     Text("Each tool asks before it runs. Choose “Always allow this tool” on a step to stop asking for that one.")
@@ -184,9 +193,15 @@ struct SettingsView: View {
         }
     }
 
-    /// "The Pi offers web_search and web_fetch."
-    private static func toolsSentence(_ names: [String]) -> String {
-        names.isEmpty ? "The Pi offers no tools the app can use." : "The Pi offers \(names.formatted(.list(type: .and)))."
+    /// The switch for one tool. The Pi's web tools are on to begin with; a
+    /// tool from any other MCP server waits until the person switches it on.
+    private static func toolRow(_ tool: ServerTool) -> (title: String, note: String) {
+        switch tool.tool {
+        case "web_search": ("Web search", "Searches the web for what the model wants to know.")
+        case "web_fetch": ("Read web pages", "Reads a page the model picks, such as a search result.")
+        default: (tool.display_name ?? tool.tool,
+                  "From another MCP server on your Pi. The Pi can't tell what a tool does, so switch it on only if you trust it.")
+        }
     }
 
     // MARK: System prompt

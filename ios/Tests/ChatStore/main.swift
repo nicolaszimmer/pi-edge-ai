@@ -103,7 +103,9 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     let writer = ServerTool(tool: "write_file", display_name: nil, type: "server", permissions: ["write": true], definition: .object([:]))
     let reader = ServerTool(tool: "read_file", display_name: nil, type: "server", permissions: ["write": false], definition: .object([:]))
     let unsure = ServerTool(tool: "mystery", display_name: nil, type: "mcp", permissions: nil, definition: .object([:]))
-    LlamaClient.offered = [search, writer, reader, unsure, fetch]
+    // Another MCP server's tool: offered only once switched on in Settings
+    let other = ServerTool(tool: "notes_write", display_name: nil, type: "mcp", permissions: ["write": false], definition: .object([:]))
+    LlamaClient.offered = [search, writer, reader, unsure, other, fetch]
     LlamaClient.asksFor = "web_search"
     let store = ChatStore(archive: archive, defaults: defaults)
 
@@ -119,7 +121,9 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     store.newChat()
     store.send("Wie wird das Wetter morgen?", image: nil)
     await wait(80)
-    check(LlamaClient.lastTools.count == 2, "only the MCP tools that don't write offered: \(LlamaClient.lastTools.count)")
+    check(LlamaClient.lastTools.count == 2, "only the Pi's web tools offered: \(LlamaClient.lastTools.count)")
+    check(store.usableTools.map(\.tool) == ["web_search", "notes_write", "web_fetch"]
+          && store.toolsForModel.map(\.tool) == ["web_search", "web_fetch"], "usable and offered: \(store.toolsForModel.map(\.tool))")
     let system = LlamaClient.lastWire.first
     check(system?.role == "system" && system?.text.hasPrefix("Today is ") == true, "date in the system prompt: \(system?.text ?? "none")")
     check(store.messages.map(\.role) == [.user, .assistant, .tool], "steps: \(store.messages.map(\.role))")
@@ -187,7 +191,7 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
     LlamaClient.asksFor = "web_search"
 
     // A tool the app did not offer: refused without asking, never sent to the Pi
-    for name in ["write_file", "read_file", "mystery"] {
+    for name in ["write_file", "read_file", "mystery", "notes_write"] {
         LlamaClient.asksFor = name
         store.newChat()
         store.send("Mach was mit \(name)", image: nil)
@@ -198,6 +202,22 @@ func wait(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_00
         await wait(400)
         check(LlamaClient.ran.count == 3 && store.messages.last?.text.hasSuffix("ten") == true, "\(name) not run, answer follows")
     }
+
+    // Settings: another server's tool is offered once switched on, a web tool can go off
+    store.setTool("notes_write", on: true)
+    store.setTool("web_fetch", on: false)
+    check(store.toolsForModel.map(\.tool) == ["web_search", "notes_write"], "switched: \(store.toolsForModel.map(\.tool))")
+    check(ChatStore(archive: archive, defaults: defaults).toolChoices == ["notes_write": true, "web_fetch": false], "switches kept after a relaunch")
+    LlamaClient.asksFor = "web_fetch"
+    store.newChat()
+    store.send("Lies noch eine Seite", image: nil)
+    await wait(80)
+    let off = store.messages.first { $0.role == .tool }
+    check(LlamaClient.lastTools.count == 2 && store.toolStepAwaitingApproval == nil && off?.toolState == .failed, "switched-off tool refused")
+    await wait(400)
+    check(LlamaClient.ran.count == 3 && store.messages.last?.text.hasSuffix("ten") == true, "switched-off tool not run")
+    store.setTool("notes_write", on: false)
+    store.setTool("web_fetch", on: true)
     LlamaClient.asksFor = "web_search"
 
     // Ask again: every tool asks once more
