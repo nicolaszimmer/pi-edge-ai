@@ -440,7 +440,9 @@ def download(url, deadline):
                     break
                 chunks.append(chunk)
                 size += len(chunk)
-            return {"url": response.geturl(), "ctype": response.headers.get_content_type(),
+            # get_content_type() says text/plain when the header is missing; keep None instead
+            ctype = response.headers.get_content_type() if response.headers.get("Content-Type") else None
+            return {"url": response.geturl(), "ctype": ctype,
                     "charset": response.headers.get_content_charset(),
                     "raw": b"".join(chunks), "cut_short": cut_short}
     except urllib.error.HTTPError as e:
@@ -453,6 +455,7 @@ def download(url, deadline):
 
 
 def web_fetch(args):
+    """Tool: fetch a public page within FETCH_DEADLINE and return its readable text."""
     url = str(args.get("url") or "").strip()
     if not url:
         raise ToolError("url is empty")
@@ -473,7 +476,11 @@ def web_fetch(args):
         raise done["error"]
     final_url, ctype, charset, raw = done["url"], done["ctype"], done["charset"], done["raw"]
 
-    decoded = raw.decode(guess_charset(raw, charset), "replace")
+    if ctype is None:  # no Content-Type header: look at the content itself
+        head = raw[:1024].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+        ctype = "text/html" if head.startswith((b"<!doctype html", b"<html")) or b"<html" in head \
+            else "text/plain"
+    decoded = raw.decode(guess_charset(raw, charset), "replace").lstrip("\ufeff")
     if ctype in ("text/html", "application/xhtml+xml"):
         parser = TextExtractor()
         parser.feed(decoded)

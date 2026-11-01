@@ -1,6 +1,6 @@
 # Gemma 4 on a Raspberry Pi 5
 
-A private chat assistant on your home network: **Gemma 4 E2B and E4B** running on a **Raspberry Pi 5 (8 GB)** with **llama.cpp**, served through an **OpenAI-compatible API** with a **built-in web UI** and a small **iOS app**. Optional: more models (**Qwen 3.5**) and **web search**.
+A private chat assistant on your home network: **Gemma 4 E2B and E4B** running on a **Raspberry Pi 5 (8 GB)** with **llama.cpp**, served through an **OpenAI-compatible API** with a **built-in web UI** and a small **iOS app**. Optional: more models (**Qwen 3.5**, **Ministral 3**, **Granite 4.2**, **LFM2.5**) and **web search**.
 
 ```
  iPhone (Pi Chat app or Safari)  ─┐
@@ -8,14 +8,14 @@ A private chat assistant on your home network: **Gemma 4 E2B and E4B** running o
  Anything OpenAI-compatible      ─┘     /v1/chat/completions          llama-server (router)
                                         web UI at /                   ├─ gemma-4-e2b  (fast)
                                                                       ├─ gemma-4-e4b  (smarter)
-                                                                      ├─ qwen3.5-2b / 4b  (optional)
+                                                                      ├─ more models: Qwen 3.5, Ministral 3, ...  (optional)
                                                                       └─ web_search, web_fetch tools (optional)
 ```
 
 - [What you get and what to expect](#what-to-expect)
 - [What makes this setup fast](#what-makes-this-setup-fast)
 - [Step-by-step guide](#step-by-step) (about an hour, most of it waiting)
-- [More models: Qwen 3.5](#more-models-qwen-35) · [Web search](#web-search)
+- [More models](#more-models) (Qwen, Ministral, Granite, LFM) · [Web search](#web-search)
 - [Using the API](#using-the-api) · [iOS app](ios/README.md) · [Tuning](#tuning) · [Troubleshooting](#troubleshooting)
 
 ## What to expect
@@ -143,38 +143,43 @@ cd ~/pi-edge-ai/pi
 
 If `status.sh` reports **under-voltage** or **soft temperature limit**, fix the power supply or the cooling first. Nothing else matters as much.
 
-## More models: Qwen 3.5
+## More models
 
-Besides Gemma, the scripts know Alibaba's **Qwen 3.5** small models. Like Gemma 4 they read photos, speak many languages and can use tools such as [web search](#web-search). They are optional; add them to your running Pi with one command:
+Besides the two Gemmas, the scripts know a few more small models from other makers. They are optional; add any of them to your running Pi with one command:
 
 ```bash
 cd ~/pi-edge-ai && git pull
 cd pi
-./add-model.sh                # lists the models you can add
-./add-model.sh qwen3.5-4b     # downloads it, adds it to the model menu, restarts the server
+./add-model.sh                    # lists the models you can add
+./add-model.sh ministral-3-3b     # downloads it, adds it to the model menu, restarts the server
 ```
 
-| | Qwen 3.5 2B | Qwen 3.5 4B |
-|---|---|---|
-| File (Q4_0) | 1.2 GB + 0.67 GB vision | 2.6 GB + 0.67 GB vision |
-| Speed on a Pi 5 (estimate) | roughly like Gemma 4 E2B | roughly like Gemma 4 E4B |
-| Good for | quick answers, a lighter alternative to E2B | harder questions; very reliable with the web tools in a short test |
+| Model ID | Maker | File (Q4_0) | Speed on a Pi 5 (estimate) | Photos | Good for |
+|---|---|---|---|---|---|
+| `qwen3.5-2b` | Alibaba | 1.2 GB + 0.67 GB vision | roughly like Gemma 4 E2B | yes | quick answers; sometimes skips the web tools and answers from memory |
+| `qwen3.5-4b` | Alibaba | 2.6 GB + 0.67 GB vision | roughly like Gemma 4 E4B | yes | harder questions; very reliable with the web tools |
+| `ministral-3-3b` | Mistral AI | 2.0 GB + 0.84 GB vision | between Gemma 4 E2B and E4B | yes | everyday chat in many languages; very reliable with the web tools; answers without a thinking step |
+| `granite-4.2-3b` | IBM | 2.1 GB | between Gemma 4 E2B and E4B | no | reasoning when you switch thinking on; searches well, but rarely opens a page itself |
+| `lfm2.5-8b-a1b` | Liquid AI | 4.8 GB | almost like Gemma 4 E2B | no | assistant tasks and tool use; very reliable with the web tools; always thinks first |
 
-The speeds are estimates from the file sizes (generation speed on a Pi is limited by how many bytes it reads per token). `./bench.sh api qwen3.5-4b` gives you real numbers. Only one model sits in RAM at a time, so every extra model costs disk space, not memory.
+The speeds are estimates: generation speed on a Pi is limited by how many bytes of the model it reads per token, which is roughly the file size. LFM2.5 8B-A1B is the exception: it is a *mixture of experts* with 8.3B parameters, but only 1.5B of them work on each token, so it reads much less than its 4.8 GB file per token. `./bench.sh api <model-id>` gives you real numbers. Only one model sits in RAM at a time, so every extra model costs disk space, not memory.
+
+**How they did in a short test** (llama-server b12032 with the web tools, the same five questions twice per model, on an x86 machine, not a Pi): Ministral 3 3B, LFM2.5 8B-A1B and Qwen 3.5 4B chose the right tool every time and answered correctly from a page they fetched; Gemma 4 E2B did in 9 of 10 cases. Granite 4.2 3B searched when it should, but when given a link it searched instead of opening the page. Ministral doesn't know today's date and sometimes puts an old year into its searches ("… 2024"). On the same machine, LFM2.5 generated at about 90 % of Gemma 4 E2B's speed, Ministral and Granite at about 60 %, Qwen 3.5 4B at about 40 %.
 
 Good to know:
 
-- **Thinking** is off by default, as for Gemma (`reasoning = off` in `models.ini`). The web UI's thinking toggle works the same way.
-- **Sampling:** the Qwen sections in `models.ini` use Qwen's recommended settings (temperature 0.7, top-p 0.8, top-k 20, presence penalty 1.5).
-- **Source:** Qwen publishes no official Q4_0 GGUF, so the files come from [Unsloth's conversions](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF). Q4_0 is used because it is the fastest 4-bit format on the Pi 5's CPU. Unlike Gemma's QAT files it is not quantization-aware trained, so it loses a bit more quality.
-- **Bigger Qwen models don't fit.** Qwen 3.5 9B would just about fit in 8 GB but run at around 2 tokens/s, and Qwen 3.6 and 3.8 start at 27B.
-- **New install with Qwen from the start:** `MODELS="e2b e4b qwen3.5-4b" ./install.sh`.
+- **Thinking** is off by default for every model (`reasoning = off` in `models.ini`), and the web UI's thinking toggle switches it on per chat. The exception is **LFM2.5 8B-A1B**: it always thinks before answering, about 200 tokens even for a one-sentence reply. The web UI shows that thinking folded away, but on a Pi it can add half a minute to each reply.
+- **Sampling:** each model's section in `models.ini` uses its maker's recommended settings, for example temperature 0.1 for Ministral and 1.0 for Granite.
+- **Sources:** Qwen and Mistral publish no Q4_0 GGUF, so those files come from [Unsloth's conversions](https://huggingface.co/unsloth). IBM and Liquid AI publish their own. Q4_0 is used throughout because it is the fastest 4-bit format on the Pi 5's CPU. Only Gemma's files are quantization-aware trained, so the others lose a bit more quality at 4 bits.
+- **Licences:** Gemma has Google's Gemma terms; Qwen, Ministral and Granite are Apache 2.0. LFM2.5 uses the LFM Open License, which is free for personal use and for companies under $10 million in annual revenue.
+- **Bigger models don't fit well.** Qwen 3.5 9B, Ministral 3 8B and Granite 4.2 8B are about 5 GB at 4 bits and would run at around 2 tokens/s; Gemma 4 12B is 7 GB, too much next to the OS. Newer Qwen generations (3.6, 3.8) start at 27B.
+- **New install with extra models from the start:** `MODELS="e2b e4b ministral-3-3b" ./install.sh` (`./download-models.sh --list` shows every name).
 - **Remove a model:** delete its `[section]` from `/etc/pi-llm/models.ini`, run `sudo systemctl restart pi-llm`, and delete its files from `/opt/pi-llm/models`.
 - **Any other GGUF model** works the same way: download the file to `/opt/pi-llm/models` and add a section with a `model = /opt/pi-llm/models/<file>.gguf` line to `/etc/pi-llm/models.ini`.
 
 ## Web search
 
-Optional: the models get two tools, `web_search` (titles, links and snippets from a search engine) and `web_fetch` (reads one web page as text). The built-in web UI uses them on its own. Ask "What's the weather in Hamburg tomorrow?" and the model searches, reads a page or two and answers. In a short test, Gemma 4 E2B and Qwen 3.5 4B chose the right tool almost every time and left questions like "what is 17 × 23" alone.
+Optional: the models get two tools, `web_search` (titles, links and snippets from a search engine) and `web_fetch` (reads one web page as text). The built-in web UI uses them on its own. Ask "What's the weather in Hamburg tomorrow?" and the model searches, reads a page or two and answers. In short tests, Gemma 4 E2B, Qwen 3.5 4B, Ministral 3 3B and LFM2.5 8B-A1B chose the right tool almost every time and left questions like "what is 17 × 23" alone ([details](#more-models)).
 
 You need a search engine. Pick one:
 
@@ -227,7 +232,7 @@ The web tool talks to SearXNG's JSON API, which is off by default. Open `/etc/se
 
 ## Using the API
 
-Any OpenAI-compatible client works. Use base URL `http://pi-llm.local:8080/v1`, your API key, and model `gemma-4-e2b` or `gemma-4-e4b` (or `qwen3.5-2b` / `qwen3.5-4b` if you added them).
+Any OpenAI-compatible client works. Use base URL `http://pi-llm.local:8080/v1`, your API key, and model `gemma-4-e2b` or `gemma-4-e4b` (or the ID of any [model you added](#more-models); `GET /v1/models` lists them).
 
 ```bash
 curl http://pi-llm.local:8080/v1/chat/completions \
@@ -329,7 +334,7 @@ Then use `http://pi-llm:8080` (MagicDNS) from anywhere. `sudo tailscale serve --
 pi/
   install.sh          one-shot installer (build, models, service, config)
   build-llama.sh      build or update llama.cpp natively (pinned release)
-  download-models.sh  fetch and checksum-verify the GGUFs (Gemma 4, Qwen 3.5)
+  download-models.sh  fetch and checksum-verify the GGUFs (Gemma 4, Qwen 3.5, Ministral 3, Granite 4.2, LFM2.5)
   add-model.sh        add a model to an installed server
   models.ini          model presets (installed to /etc/pi-llm/)
   server.env          listen address, port, extra flags (installed to /etc/pi-llm/)
