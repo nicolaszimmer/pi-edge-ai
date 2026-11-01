@@ -130,7 +130,8 @@ extension ChatSummary {
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty } ?? ""
-        let words = plain(line)
+        // The question is the person's own text, not Markdown: keep every character.
+        let words = folded(line)
         if words.isEmpty { return hasPhoto ? "Photo" : "New chat" }
         return shortened(words, to: 60)
     }
@@ -143,13 +144,40 @@ extension ChatSummary {
         return shortened(plain(answer.text), to: 160)
     }
 
-    /// Markdown and LaTeX marks taken out, white space folded.
+    /// An answer as plain text: Markdown's marks taken out, but not characters
+    /// of the text itself, so "C#", "my_var", "5 > 3" and "$5" stay as written.
     static func plain(_ text: String) -> String {
-        var s = text.replacingOccurrences(of: #"\\(text|mathrm|mathbf|operatorname)\{([^}]*)\}"#, with: "$2", options: .regularExpression)
+        var s = text
+        // Marks at the start of a line: rules, fences, headings, quotes, list
+        // markers, table delimiter rows.
+        let lineMarks = [
+            #"(?m)^[ \t]*([-*_][ \t]*){3,}$"#,
+            #"(?m)^[ \t]*(```|~~~).*$"#,
+            #"(?m)^[ \t]{0,3}#{1,6}[ \t]+"#,
+            #"(?m)^[ \t]*(>[ \t]?)+"#,
+            #"(?m)^[ \t]*([-*+]|\d{1,9}[.)])[ \t]+"#,
+            #"(?m)^[ \t]*\|?([ \t]*:?-+:?[ \t]*\|)+[ \t]*(:?-+:?)?[ \t]*$"#,
+        ]
+        for pattern in lineMarks {
+            s = s.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        // Maths keeps its LaTeX but loses its dollars; prices keep theirs.
+        let (marked, spans) = InlineMath.extract(s)
+        s = ""
+        for ch in marked {
+            if let i = InlineMath.index(of: ch), i < spans.count { s += spans[i].latex } else { s.append(ch) }
+        }
+        s = s.replacingOccurrences(of: #"\\(text|mathrm|mathbf|operatorname)\{([^}]*)\}"#, with: "$2", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\\(Huge|huge|LARGE|Large|large|left|right|displaystyle)(?![A-Za-z])"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"[#*_`>|~$]"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"^-{3,}$"#, with: "", options: [.regularExpression])
-        return s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        // Emphasis and code marks, and table pipes.
+        s = s.replacingOccurrences(of: #"\*+|`+"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: "|", with: " ")
+        return folded(s)
+    }
+
+    /// White space, line breaks included, folded into single spaces.
+    static func folded(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     static func shortened(_ text: String, to limit: Int) -> String {
