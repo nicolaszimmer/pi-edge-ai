@@ -30,10 +30,14 @@ UNIT="${UNIT:-/etc/systemd/system/pi-llm.service}"
 # get <KEY> : current value in the env file (empty if unset or commented out)
 get() { sudo sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | tail -1; }
 
+check_value() {
+    [[ "$2" =~ ^[^[:space:]\"\'\\]*$ ]] || die "$1: spaces, quotes and backslashes are not supported"
+}
+
 # set_var <KEY> <value> : set (or un-comment) KEY in the env file
 set_var() {
     local key="$1" value="$2" escaped
-    [[ "$value" =~ ^[^[:space:]\"\'\\]*$ ]] || die "$key: spaces, quotes and backslashes are not supported"
+    check_value "$key" "$value"
     escaped=${value//&/\\&}
     escaped=${escaped//|/\\|}
     if sudo grep -q "^#\?$key=" "$ENV_FILE"; then
@@ -62,11 +66,15 @@ install_files() {
     fi
 }
 
-# run_test <query> : search once with the service's settings, as the service user.
+# run_test <query> [KEY=value...] : search once as the service user, with the
+# service's settings plus the given ones on top (to test them before saving).
 # Reads KEY=value lines like systemd does (no shell parsing, optional quotes).
+# The extra settings go in through stdin, so an API key never shows up in `ps`.
 run_test() {
+    local query="$1"
+    shift
     # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
-    sudo bash -c '
+    printf '%s\n' "$@" | sudo bash -c '
         printf -v q "\x27"
         while IFS= read -r line; do
             [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
@@ -75,9 +83,9 @@ run_test() {
                 value="${value:1:${#value}-2}"
             fi
             export "$key=$value"
-        done < "$1"
+        done < <(cat "$1"; cat)
         exec runuser -u "$2" -- python3 "$3" --search "$4"' \
-        _ "$ENV_FILE" "$SERVICE_USER" "$SCRIPT" "$1"
+        _ "$ENV_FILE" "$SERVICE_USER" "$SCRIPT" "$query"
 }
 
 show_tools() {
@@ -112,7 +120,8 @@ EOF
 }
 
 cmd_on() {
-    local fresh="${1:-}" engine key_var value
+    local fresh="${1:-}" engine key_var value again=on
+    [[ -z "$fresh" ]] || again=setup
     install_files
 
     engine="${WEB_SEARCH_ENGINE:-}"
@@ -138,13 +147,15 @@ cmd_on() {
         fi
     fi
     [[ -n "$value" ]] || die "$key_var is empty"
+    check_value "$key_var" "$value"
+
+    # Test first, save after: a bad key must not replace working settings
+    log "Test search with $engine"
+    run_test "Raspberry Pi 5" "WEB_SEARCH_ENGINE=$engine" "$key_var=$value" \
+        || die "the test search failed (see above), so nothing was changed. Fix it and run '$0 $again' again"
+
     set_var WEB_SEARCH_ENGINE "$engine"
     set_var "$key_var" "$value"
-
-    log "Test search with $engine"
-    run_test "Raspberry Pi 5" \
-        || die "the test search failed (see above). Fix it and run '$0 on' again; web search was not switched on"
-
     set_var LLAMA_ARG_MCP_SERVERS_CONFIG "$CONF/mcp.json"
     log "Restarting pi-llm"
     restart_service

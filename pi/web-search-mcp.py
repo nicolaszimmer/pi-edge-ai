@@ -28,6 +28,7 @@ Logs go to stderr.
 import codecs
 import datetime
 import html
+import http.client
 import ipaddress
 import json
 import os
@@ -181,18 +182,11 @@ def web_search(args):
 # Fetch
 # --------------------------------------------------------------------------
 
-def check_public_url(url):
-    """Only public http(s) pages: keep the model away from the router admin page & co."""
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise ToolError("only http:// and https:// URLs can be fetched")
-    host = parts.hostname
-    if not host:
-        raise ToolError(f"not a valid URL: {url}")
+def public_addresses(host, port):
+    """Resolve host and return its addresses, or raise if any of them is not public."""
     try:
-        port = parts.port or (443 if parts.scheme == "https" else 80)
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except (socket.gaierror, ValueError) as e:
+    except (socket.gaierror, UnicodeError, ValueError) as e:
         raise ToolError(f"could not resolve {host}") from e
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
@@ -201,6 +195,66 @@ def check_public_url(url):
         if not ip.is_global:
             raise ToolError(f"{host} is a local or private address; only public web pages "
                             "can be fetched")
+    return infos
+
+
+def check_public_url(url):
+    """Only public http(s) pages: keep the model away from the router admin page & co.
+    This early check gives a clear error; the connection itself is checked again below."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ToolError("only http:// and https:// URLs can be fetched")
+    host = parts.hostname
+    if not host:
+        raise ToolError(f"not a valid URL: {url}")
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as e:
+        raise ToolError(f"not a valid URL: {url}") from e
+    public_addresses(host, port)
+
+
+def connect_public(host, port, timeout):
+    """Connect only to an address that passed the check. Checking and connecting use the
+    same DNS answer, so a name that changes its answer in between (DNS rebinding) can't
+    sneak a local address past the check."""
+    error = None
+    for family, kind, proto, _, address in public_addresses(host, port):
+        sock = socket.socket(family, kind, proto)
+        try:
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            sock.connect(address)
+            return sock
+        except OSError as e:
+            sock.close()
+            error = e
+    raise error or OSError(f"could not connect to {host}")
+
+
+class PublicHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = connect_public(self.host, self.port, self.timeout)
+
+
+class PublicHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        if self._tunnel_host:  # through an HTTPS proxy, which resolves the name itself
+            return super().connect()
+        sock = connect_public(self.host, self.port, self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class PublicHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        if req.has_proxy():  # plain HTTP through a proxy: it connects, not us
+            return super().http_open(req)
+        return self.do_open(PublicHTTPConnection, req)
+
+
+class PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(PublicHTTPSConnection, req, context=self._context)
 
 
 class CheckedRedirects(urllib.request.HTTPRedirectHandler):
@@ -342,7 +396,7 @@ def web_fetch(args):
         url = "https://" + url
     check_public_url(url)
 
-    opener = urllib.request.build_opener(CheckedRedirects)
+    opener = urllib.request.build_opener(PublicHTTPHandler, PublicHTTPSHandler, CheckedRedirects)
     request = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
@@ -475,7 +529,8 @@ def serve():
             continue
         response = handle(message) if isinstance(message, dict) else None
         if response is not None:
-            out.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
+            # ASCII-only JSON: a lone surrogate from \ud800 in the input can't break the write
+            out.write(json.dumps(response).encode("ascii") + b"\n")
             out.flush()
 
 
