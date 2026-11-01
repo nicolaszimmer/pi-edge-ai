@@ -70,7 +70,11 @@ enum Markdown {
 
     // MARK: Blocks
 
-    static func blocks(_ lines: [Line]) -> [MarkdownBlock] {
+    /// How deep quotes and lists may nest. Deeper markers are read as text, so
+    /// a line of a thousand ">" cannot recurse a thousand times.
+    static let maxDepth = 12
+
+    static func blocks(_ lines: [Line], depth: Int = 0) -> [MarkdownBlock] {
         var result: [MarkdownBlock] = []
         var i = 0
         while i < lines.count {
@@ -78,7 +82,7 @@ enum Markdown {
                 i += 1
                 continue
             }
-            let (block, next) = readBlock(lines, i)
+            let (block, next) = readBlock(lines, i, depth: depth)
             result.append(block)
             i = max(next, i + 1)
         }
@@ -88,12 +92,16 @@ enum Markdown {
     /// The block that starts at line `i`, and the line after it. The readers
     /// are tried in order (one at a time, not as a chain of ??, which makes
     /// the compiler take minutes).
-    private static func readBlock(_ lines: [Line], _ i: Int) -> (MarkdownBlock, Int) {
+    private static func readBlock(_ lines: [Line], _ i: Int, depth: Int) -> (MarkdownBlock, Int) {
         let readers: [([Line], Int) -> (MarkdownBlock, Int)?] = [
-            fence, displayMath, mathEnvironment, heading, rule, table, quote, list,
+            fence, displayMath, mathEnvironment, heading, rule, table,
         ]
         for read in readers {
             if let found = read(lines, i) { return found }
+        }
+        if depth < maxDepth {
+            if let found = quote(lines, i, depth: depth) { return found }
+            if let found = list(lines, i, depth: depth) { return found }
         }
         return paragraph(lines, i)
     }
@@ -106,7 +114,10 @@ enum Markdown {
         if t.hasPrefix("$$") || t.hasPrefix("\\[") { return true }
         if line.indent < 4 && t.hasPrefix(">") { return true }
         if environmentName(t) != nil || headingLevel(line) != nil { return true }
-        return marker(line) != nil
+        // As in CommonMark, only a list that starts at 1 interrupts a paragraph,
+        // so a line like "2024. war ein gutes Jahr" stays in its paragraph.
+        guard let m = marker(line) else { return false }
+        return !m.ordered || m.number == 1
     }
 
     // ```swift … ``` and ~~~ … ~~~. Runs to the end while it is still open.
@@ -285,40 +296,66 @@ enum Markdown {
         var t = Substring(marked)
         if t.hasPrefix("|") { t = t.dropFirst() }
         if t.hasSuffix("|") && !t.hasSuffix("\\|") { t = t.dropLast() }
+        let chars = Array(t)
         var cells: [String] = []
         var cell = ""
-        var inCode = false
-        var escaped = false
-        for ch in t {
-            if escaped {
-                cell.append(ch)
-                escaped = false
-            } else if ch == "\\" {
-                escaped = true
-                cell.append(ch)
+        /// The length of the backtick run that opened the code span we are in, or 0.
+        var codeRun = 0
+        var k = 0
+        while k < chars.count {
+            let ch = chars[k]
+            if ch == "\\", k + 1 < chars.count {
+                // \| is a pipe in the cell (maths is set aside, so its \| stays).
+                if chars[k + 1] != "|" { cell.append(ch) }
+                cell.append(chars[k + 1])
+                k += 2
             } else if ch == "`" {
-                inCode.toggle()
-                cell.append(ch)
-            } else if ch == "|" && !inCode {
+                // ``a|b`` is one code span: runs pair up by length, as in InlineMath.
+                var n = 0
+                while k + n < chars.count, chars[k + n] == "`" { n += 1 }
+                if codeRun == 0 {
+                    if hasBacktickRun(chars, from: k + n, length: n) { codeRun = n }
+                } else if n == codeRun {
+                    codeRun = 0
+                }
+                cell.append(contentsOf: chars[k..<k + n])
+                k += n
+            } else if ch == "|" && codeRun == 0 {
                 cells.append(cell)
                 cell = ""
+                k += 1
             } else if let i = InlineMath.index(of: ch), i < spans.count {
                 // The maths goes back as written: the cell is read again when drawn.
                 let latex = spans[i].latex
                 cell += spans[i].display ? "$$\(latex)$$" : "$\(latex)$"
+                k += 1
             } else {
                 cell.append(ch)
+                k += 1
             }
         }
         cells.append(cell)
-        return cells.map {
-            $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\\|", with: "|")
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private static func hasBacktickRun(_ chars: [Character], from start: Int, length: Int) -> Bool {
+        var j = start
+        while j < chars.count {
+            guard chars[j] == "`" else {
+                j += 1
+                continue
+            }
+            var n = 0
+            while j + n < chars.count, chars[j + n] == "`" { n += 1 }
+            if n == length { return true }
+            j += n
         }
+        return false
     }
 
     // MARK: Quotes
 
-    private static func quote(_ lines: [Line], _ i: Int) -> (MarkdownBlock, Int)? {
+    private static func quote(_ lines: [Line], _ i: Int, depth: Int) -> (MarkdownBlock, Int)? {
         guard lines[i].indent < 4, lines[i].content.hasPrefix(">") else { return nil }
         var inner: [Line] = []
         var j = i
@@ -328,7 +365,7 @@ enum Markdown {
             inner.append(Line(String(rest)))
             j += 1
         }
-        return (.quote(blocks(inner)), j)
+        return (.quote(blocks(inner, depth: depth + 1)), j)
     }
 
     // MARK: Lists
@@ -376,7 +413,7 @@ enum Markdown {
         return Marker(ordered: ordered, number: number, contentIndent: line.indent + markerLength + gap, text: shown)
     }
 
-    private static func list(_ lines: [Line], _ i: Int) -> (MarkdownBlock, Int)? {
+    private static func list(_ lines: [Line], _ i: Int, depth: Int) -> (MarkdownBlock, Int)? {
         guard let first = marker(lines[i]) else { return nil }
         let base = lines[i].indent
         var items: [[Line]] = []
@@ -419,7 +456,7 @@ enum Markdown {
             j += 1
         }
         items.append(current)
-        let list = MarkdownList(ordered: first.ordered, start: first.number, items: items.map(blocks))
+        let list = MarkdownList(ordered: first.ordered, start: first.number, items: items.map { blocks($0, depth: depth + 1) })
         return (.list(list), j)
     }
 

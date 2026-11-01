@@ -161,18 +161,28 @@ extension ChatSummary {
         for pattern in lineMarks {
             s = s.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
         }
-        // Maths keeps its LaTeX but loses its dollars; prices keep theirs.
+        // Maths is set aside while the marks go, so its *, | and _ stay.
         let (marked, spans) = InlineMath.extract(s)
-        s = ""
-        for ch in marked {
-            if let i = InlineMath.index(of: ch), i < spans.count { s += spans[i].latex } else { s.append(ch) }
+        // The pipes of table rows (a line that starts and ends with one).
+        s = marked
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                guard t.count > 1, t.hasPrefix("|"), t.hasSuffix("|") else { return String(line) }
+                return t.replacingOccurrences(of: "|", with: " ")
+            }
+            .joined(separator: "\n")
+        // Emphasis and code marks in pairs only, so "5 * 3" keeps its star.
+        s = s.replacingOccurrences(of: #"(\*{1,3})(?=\S)(.+?)(?<=\S)\1"#, with: "$2", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(`+)(.+?)\1"#, with: "$2", options: .regularExpression)
+        // The maths back, as its LaTeX without the dollars; prices keep theirs.
+        var out = ""
+        for ch in s {
+            if let i = InlineMath.index(of: ch), i < spans.count { out += spans[i].latex } else { out.append(ch) }
         }
-        s = s.replacingOccurrences(of: #"\\(text|mathrm|mathbf|operatorname)\{([^}]*)\}"#, with: "$2", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"\\(Huge|huge|LARGE|Large|large|left|right|displaystyle)(?![A-Za-z])"#, with: "", options: .regularExpression)
-        // Emphasis and code marks, and table pipes.
-        s = s.replacingOccurrences(of: #"\*+|`+"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: "|", with: " ")
-        return folded(s)
+        out = out.replacingOccurrences(of: #"\\(text|mathrm|mathbf|operatorname)\{([^}]*)\}"#, with: "$2", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"\\(Huge|huge|LARGE|Large|large|left|right|displaystyle)(?![A-Za-z])"#, with: "", options: .regularExpression)
+        return folded(out)
     }
 
     /// White space, line breaks included, folded into single spaces.
