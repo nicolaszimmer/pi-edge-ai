@@ -1,5 +1,5 @@
 [Unit]
-Description=Gemma 4 on llama.cpp (OpenAI-compatible API + web UI)
+Description=Local LLMs on llama.cpp (OpenAI-compatible API + web UI)
 Documentation=https://github.com/ggml-org/llama.cpp/tree/master/tools/server
 After=network-online.target
 Wants=network-online.target
@@ -9,6 +9,9 @@ Type=simple
 User=llm
 Group=llm
 EnvironmentFile=/etc/pi-llm/server.env
+# Optional: web search tools and their API key (./web-search.sh). The leading
+# "-" means the service also starts when the file does not exist.
+EnvironmentFile=-/etc/pi-llm/web-search.env
 # llama-server runs in "router" mode: it lists the models from models.ini,
 # loads them on demand and forwards each request to the right one.
 ExecStart=/opt/pi-llm/llama.cpp/build/bin/llama-server \

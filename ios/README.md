@@ -3,7 +3,7 @@
 A small SwiftUI chat app for the Gemma server on your Pi:
 
 - streams answers token by token, with tokens/s shown under each reply
-- model picker (E2B / E4B) and an optional **Thinking** toggle
+- model picker (every model on the server: Gemma 4 E2B / E4B, Qwen 3.5 if you added it) and an optional **Thinking** toggle
 - attach a photo and ask about it (Gemma 4 is multimodal); photos are downscaled to 1024 px first to keep the Pi fast
 - remembers the conversation; tap the pencil icon for a new chat
 - tap the title to switch model or turn Thinking on for the next question
