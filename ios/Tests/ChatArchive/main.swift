@@ -54,6 +54,8 @@ check(ChatSummary.shortened("(Frage) " + String(repeating: "wort ", count: 10) +
 check(ChatSummary.shortened(String(repeating: "abc ", count: 14) + "x, y z", to: 59) == String(repeating: "abc ", count: 14).trimmingCharacters(in: .whitespaces) + " x…", "dangling comma dropped: \(ChatSummary.shortened(String(repeating: "abc ", count: 14) + "x, y z", to: 59))")
 let p3 = ChatSummary.preview(for: answer("So 2*x and 3*y, but **Kurz gesagt:** ok, *kursiv*, and **fett**, here."))
 check(p3 == "So 2*x and 3*y, but Kurz gesagt: ok, kursiv, and fett, here.", "stars inside words kept: \(p3)")
+let p4 = ChatSummary.preview(for: answer("See [the docs](https://example.com/docs) and ![a cat](cat.png), or [x] alone."))
+check(p4 == "See the docs and a cat, or [x] alone.", "links: \(p4)")
 try? FileManager.default.removeItem(at: root)
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

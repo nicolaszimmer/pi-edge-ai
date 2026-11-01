@@ -177,6 +177,8 @@ extension ChatSummary {
                 return t.replacingOccurrences(of: "|", with: " ")
             }
             .joined(separator: "\n")
+        // Links and images: their text, without the brackets and address.
+        s = s.replacingOccurrences(of: #"!?\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
         // Emphasis and code marks in pairs only, so "5 * 3" keeps its star.
         // Not inside a word either, so "2*x and 3*y" keeps both.
         s = s.replacingOccurrences(of: #"(?<![\w*])(\*{1,3})(?=\S)(.+?)(?<=\S)\1(?![\w*])"#, with: "$2", options: .regularExpression)
