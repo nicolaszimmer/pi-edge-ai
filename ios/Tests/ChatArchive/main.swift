@@ -56,6 +56,34 @@ let p3 = ChatSummary.preview(for: answer("So 2*x and 3*y, but **Kurz gesagt:** o
 check(p3 == "So 2*x and 3*y, but Kurz gesagt: ok, kursiv, and fett, here.", "stars inside words kept: \(p3)")
 let p4 = ChatSummary.preview(for: answer("See [the docs](https://example.com/docs) and ![a cat](cat.png), or [x] alone."))
 check(p4 == "See the docs and a cat, or [x] alone.", "links: \(p4)")
+// Tool steps: what the chat says about them, and chats saved before them still load
+func step(_ name: String, _ arguments: String, _ state: ChatMessage.ToolState?) -> ChatMessage {
+    var m = ChatMessage(role: .tool, text: "")
+    m.toolName = name
+    m.toolArguments = arguments
+    m.toolState = state
+    return m
+}
+let q = #"{"query":"Wetter Berlin"}"#
+check(step("web_search", q, .done).toolSummary == "Searched the web for “Wetter Berlin”", "done")
+check(step("web_search", q, .failed).toolSummary == "Could not search the web for “Wetter Berlin”", "failed")
+check(step("web_search", q, .declined).toolSummary == "You did not allow it to search the web for “Wetter Berlin”", "declined")
+check(step("web_fetch", #"{"url":"https://example.com/a"}"#, .running).toolSummary == "Stopped before it could read a page on example.com", "stopped")
+check(step("web_search", q, nil).toolSummary.hasPrefix("Stopped"), "no state counts as stopped")
+check(step("web_search", q, .done).isFinishedToolStep && !step("web_search", q, .waitingForApproval).isFinishedToolStep, "finished steps")
+var request = ChatMessage(role: .assistant, text: "")
+request.toolCalls = [ToolCall(id: "a", name: "web_search", arguments: q)]
+check(request.isToolRequestOnly, "answer that only asked for a tool")
+request.text = "Let me look."
+check(!request.isToolRequestOnly, "with words it shows")
+let toolChat = answer("x") + [request, step("web_search", q, .done)]
+check(ChatSummary.preview(for: toolChat) == "Let me look.", "preview skips tool steps")
+let roundTrip = try! JSONDecoder().decode([ChatMessage].self, from: JSONEncoder().encode(toolChat))
+check(roundTrip == toolChat, "tool steps saved and loaded")
+let saved = #"[{"id":"2E7E4B1C-1D29-4E43-9C8B-2F0A1C3B9E11","role":"assistant","text":"Hi","reasoning":"","isError":false,"date":800000000}]"#
+let loaded = try? JSONDecoder().decode([ChatMessage].self, from: Data(saved.utf8))
+check(loaded?.first?.text == "Hi" && loaded?.first?.toolCalls == nil, "a chat saved before tools loads")
+
 try? FileManager.default.removeItem(at: root)
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

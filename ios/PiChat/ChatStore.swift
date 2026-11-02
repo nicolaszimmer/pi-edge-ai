@@ -10,6 +10,12 @@ enum SettingsKey {
     static let thinking = "thinking"
     /// The chat that was open, to open it again at the next launch.
     static let currentChat = "currentChat"
+    /// Let the model use the tools the Pi offers, such as web search.
+    static let tools = "tools"
+    /// The tools that run without asking first, by name ("Always allow").
+    static let toolsAllowed = "toolsAllowed"
+    /// Each tool the person switched on or off in Settings, by name.
+    static let toolChoices = "toolChoices"
 
     static let defaultServerURL = "http://pi-llm.local:8080"
 }
@@ -31,11 +37,29 @@ final class ChatStore {
     /// True when the last connection error was the network (no answer at all),
     /// false when the Pi answered with an error or the address is not valid.
     var connectionUnreachable = false
+    /// The tools the Pi offers (GET /tools), such as web_search. Empty when it offers none.
+    var serverTools: [ServerTool] = []
+    /// The tool step that waits for the person to allow it, if any.
+    private(set) var toolStepAwaitingApproval: UUID?
+    /// The tools that run without asking, because the person chose Always
+    /// allow for each of them. A tool added to the Pi later still asks.
+    private(set) var alwaysAllowedTools: [String] = []
+    /// The tools the person switched on or off in Settings. A tool not in it
+    /// is on only if it is one of the Pi's web tools (ServerTool.isOnByDefault).
+    private(set) var toolChoices: [String: Bool] = [:]
+
+    /// The answer to "The model wants to search the web for …".
+    enum ToolDecision { case allow, alwaysAllow, deny }
+
+    /// Rounds of tool calls per question. After the last one the model has to
+    /// answer with what it has, so a model that keeps searching cannot loop.
+    static let maxToolRounds = 5
 
     @ObservationIgnored private var generation: Task<Void, Never>?
     @ObservationIgnored private var generationID = UUID()
     /// The messages of a chat still being answered while another is on screen.
     @ObservationIgnored private var background: [UUID: [ChatMessage]] = [:]
+    @ObservationIgnored private var approval: (continuation: CheckedContinuation<Bool, Never>, tool: String)?
     private let archive: ChatArchive
     private let defaults: UserDefaults
 
@@ -43,6 +67,8 @@ final class ChatStore {
     init(archive: ChatArchive = .standard, defaults: UserDefaults = .standard) {
         self.archive = archive
         self.defaults = defaults
+        alwaysAllowedTools = defaults.stringArray(forKey: SettingsKey.toolsAllowed) ?? []
+        toolChoices = defaults.dictionary(forKey: SettingsKey.toolChoices) as? [String: Bool] ?? [:]
         chats = archive.loadIndex()
         if chats.isEmpty, let imported = archive.importSingleChat(from: archive.singleChatFile) {
             chats = [imported]
@@ -94,6 +120,7 @@ final class ChatStore {
             if !models.contains(where: { $0.id == selectedModel }), let first = models.first {
                 defaults.set(first.id, forKey: SettingsKey.model)
             }
+            serverTools = (try? await client.tools()) ?? []
         } catch {
             connectionError = error.localizedDescription
             connectionUnreachable = error is URLError
@@ -116,32 +143,57 @@ final class ChatStore {
         // Saved now, so the question is kept even if the app closes mid-answer.
         saveChat(chatID)
 
-        let wire = wireHistory()
         let reply = ChatMessage(role: .assistant, text: "")
         messages.append(reply)
 
         let model = selectedModel
         let thinking = defaults.bool(forKey: SettingsKey.thinking)
+        let useTools = defaults.bool(forKey: SettingsKey.tools)
         let id = UUID()
         generationID = id
         generatingChatID = chatID
         isGenerating = true
 
         generation = Task {
+            // The answer being written; after tool steps a new one follows them.
+            var replyID = reply.id
             do {
-                for try await event in client.streamChat(model: model, messages: wire, thinking: thinking) {
-                    switch event {
-                    case .content(let piece):
-                        update(chatID, reply.id) { $0.text += piece }
-                    case .reasoning(let piece):
-                        update(chatID, reply.id) { $0.reasoning += piece }
-                    case .done(let timings):
-                        update(chatID, reply.id) { $0.stats = Self.format(timings) }
+                let tools = useTools ? await offeredTools(client) : []
+                let definitions = tools.map(\.definition)
+                let names = Set(tools.map(\.tool))
+                var round = 0
+                while true {
+                    let offered = round < Self.maxToolRounds ? definitions : []
+                    let wire = wireHistory(chatID, toolsOn: !definitions.isEmpty)
+                    var calls: [ToolCall] = []
+                    for try await event in client.streamChat(model: model, messages: wire, thinking: thinking, tools: offered) {
+                        switch event {
+                        case .content(let piece):
+                            update(chatID, replyID) { $0.text += piece }
+                        case .reasoning(let piece):
+                            update(chatID, replyID) { $0.reasoning += piece }
+                        case .toolCalls(let asked):
+                            calls = asked
+                        case .done(let timings):
+                            update(chatID, replyID) { $0.stats = Self.format(timings) }
+                        }
                     }
+                    // Stop ends the stream without an error; tool calls that
+                    // came in before it must not go on to ask or run.
+                    try Task.checkCancellation()
+                    guard !calls.isEmpty, !offered.isEmpty else { break }
+                    round += 1
+                    update(chatID, replyID) { $0.toolCalls = calls }
+                    for call in calls {
+                        try await runTool(call, in: chatID, client: client, offered: names)
+                    }
+                    let next = ChatMessage(role: .assistant, text: "")
+                    append(next, to: chatID)
+                    replyID = next.id
                 }
             } catch {
-                if !Task.isCancelled && (error as? URLError)?.code != .cancelled {
-                    update(chatID, reply.id) {
+                if !Task.isCancelled && !(error is CancellationError) && (error as? URLError)?.code != .cancelled {
+                    update(chatID, replyID) {
                         $0.isError = true
                         $0.text += ($0.text.isEmpty ? "" : "\n\n") + error.localizedDescription
                     }
@@ -161,11 +213,48 @@ final class ChatStore {
         generation = nil
         generationID = UUID()
         isGenerating = false
+        if let waiting = approval {
+            approval = nil
+            toolStepAwaitingApproval = nil
+            waiting.continuation.resume(returning: false)
+        }
         if let id = generatingChatID {
             generatingChatID = nil
             saveChat(id)
             background[id] = nil
         }
+    }
+
+    /// The person's answer to the tool step waiting for it.
+    func answerToolRequest(_ decision: ToolDecision) {
+        guard let waiting = approval else { return }
+        approval = nil
+        toolStepAwaitingApproval = nil
+        if decision == .alwaysAllow, !alwaysAllowedTools.contains(waiting.tool) {
+            alwaysAllowedTools.append(waiting.tool)
+            defaults.set(alwaysAllowedTools, forKey: SettingsKey.toolsAllowed)
+        }
+        waiting.continuation.resume(returning: decision != .deny)
+    }
+
+    /// Every tool asks before it runs again.
+    func askAgainForAllTools() {
+        alwaysAllowedTools = []
+        defaults.removeObject(forKey: SettingsKey.toolsAllowed)
+    }
+
+    /// The tools the Pi offers that the app can use, each with its own switch in Settings.
+    var usableTools: [ServerTool] { serverTools.filter(\.isUsableByApp) }
+
+    /// The tools the model gets: the usable ones that are switched on.
+    var toolsForModel: [ServerTool] { usableTools.filter(isSwitchedOn) }
+
+    func isSwitchedOn(_ tool: ServerTool) -> Bool { toolChoices[tool.tool] ?? tool.isOnByDefault }
+
+    /// The person's switch for one tool in Settings.
+    func setTool(_ name: String, on: Bool) {
+        toolChoices[name] = on
+        defaults.set(toolChoices, forKey: SettingsKey.toolChoices)
     }
 
     // MARK: Chats
@@ -264,17 +353,113 @@ final class ChatStore {
         archive.saveIndex(chats)
     }
 
+    /// The tools the app offers the model (see toolsForModel), asked for
+    /// fresh, so switching web search on at the Pi works without a restart here.
+    private func offeredTools(_ client: LlamaClient) async -> [ServerTool] {
+        if let fresh = try? await client.tools() { serverTools = fresh }
+        return toolsForModel
+    }
+
+    /// One tool step: shown in the chat, asked about unless always allowed,
+    /// run on the Pi, its result kept for the model. Only Stop throws.
+    private func runTool(_ call: ToolCall, in chatID: UUID, client: LlamaClient, offered: Set<String>) async throws {
+        var step = ChatMessage(role: .tool, text: "")
+        step.toolCallID = call.id
+        step.toolName = call.name
+        step.toolArguments = call.arguments
+        // A model can name any tool, also one a web page told it about. Only
+        // the ones the app offered for this question run.
+        guard offered.contains(call.name) else {
+            step.toolState = .failed
+            step.text = "There is no tool called \(call.name) here. Use only the tools you were given."
+            append(step, to: chatID)
+            saveChat(chatID)
+            return
+        }
+        step.toolState = .running
+        append(step, to: chatID)
+
+        if !alwaysAllowedTools.contains(call.name) {
+            update(chatID, step.id) { $0.toolState = .waitingForApproval }
+            saveChat(chatID)
+            // After Stop, nothing would answer the question. (No suspension
+            // between this check and the wait, so Stop can't slip in between.)
+            try Task.checkCancellation()
+            let allowed = await withCheckedContinuation { continuation in
+                approval = (continuation, call.name)
+                toolStepAwaitingApproval = step.id
+            }
+            try Task.checkCancellation()
+            guard allowed else {
+                update(chatID, step.id) {
+                    $0.toolState = .declined
+                    $0.text = "The person did not allow this. Answer without it, or say what you would need."
+                }
+                return
+            }
+            update(chatID, step.id) { $0.toolState = .running }
+        }
+
+        do {
+            let result = try await client.callTool(call)
+            update(chatID, step.id) {
+                $0.text = result.text
+                $0.toolState = result.failed ? .failed : .done
+            }
+        } catch {
+            try Task.checkCancellation()
+            update(chatID, step.id) {
+                $0.text = "The tool could not run: \(error.localizedDescription)"
+                $0.toolState = .failed
+            }
+        }
+        saveChat(chatID)
+    }
+
+    /// The messages of a chat being answered, on screen or not.
+    private func messages(of chatID: UUID) -> [ChatMessage] {
+        chatID == currentChatID ? messages : background[chatID] ?? []
+    }
+
+    private func append(_ message: ChatMessage, to chatID: UUID) {
+        if chatID == currentChatID {
+            messages.append(message)
+        } else if background[chatID] != nil {
+            background[chatID]?.append(message)
+        }
+    }
+
     /// Conversation as sent to the server: optional system prompt + all
     /// successful turns (the API is stateless, the server caches the prefix).
-    private func wireHistory() -> [LlamaClient.WireMessage] {
+    /// With tools, the steps go along, and the system prompt says today's date:
+    /// the models don't know it, and a search for "the latest …" needs it.
+    private func wireHistory(_ chatID: UUID, toolsOn: Bool) -> [LlamaClient.WireMessage] {
         var wire: [LlamaClient.WireMessage] = []
-        let system = (defaults.string(forKey: SettingsKey.systemPrompt) ?? "")
+        var system = (defaults.string(forKey: SettingsKey.systemPrompt) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        if toolsOn {
+            let today = Date().formatted(Date.FormatStyle(date: .complete, time: .omitted, locale: Locale(identifier: "en_US_POSIX")))
+            system += (system.isEmpty ? "" : "\n\n") + "Today is \(today)."
+        }
         if !system.isEmpty {
             wire.append(.init(role: "system", text: system))
         }
-        for m in messages where !m.isError && !(m.text.isEmpty && m.imageJPEG == nil) {
-            wire.append(.init(role: m.role.rawValue, text: m.text, imageJPEG: m.imageJPEG))
+        let list = messages(of: chatID)
+        // A call goes along only with its result; a step that Stop cut short goes with neither.
+        let answered = Set(list.filter(\.isFinishedToolStep).compactMap(\.toolCallID))
+        for m in list where !m.isError {
+            switch m.role {
+            case .user:
+                guard !(m.text.isEmpty && m.imageJPEG == nil) else { continue }
+                wire.append(.init(role: "user", text: m.text, imageJPEG: m.imageJPEG))
+            case .assistant:
+                let calls = (m.toolCalls ?? []).filter { answered.contains($0.id) }
+                guard !(m.text.isEmpty && calls.isEmpty) else { continue }
+                wire.append(.init(role: "assistant", text: m.text, toolCalls: calls.isEmpty ? nil : calls))
+            case .tool:
+                guard m.isFinishedToolStep, let id = m.toolCallID else { continue }
+                wire.append(.init(role: "tool", text: m.text, toolCallID: id))
+            }
         }
         return wire
     }

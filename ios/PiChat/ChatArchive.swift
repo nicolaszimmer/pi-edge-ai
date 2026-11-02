@@ -1,7 +1,12 @@
 import Foundation
 
 struct ChatMessage: Identifiable, Codable, Equatable {
-    enum Role: String, Codable { case user, assistant }
+    /// `tool` is a tool's result, such as a web search, that the model asked for.
+    enum Role: String, Codable { case user, assistant, tool }
+
+    /// Where a tool step is. Saved with the chat; a step left waiting or
+    /// running (the app closed, or Stop) counts as stopped.
+    enum ToolState: String, Codable { case waitingForApproval, running, done, failed, declined }
 
     var id = UUID()
     var role: Role
@@ -12,6 +17,38 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var isError: Bool = false
     /// When it was sent or answered (nil for chats saved before this was kept).
     var date: Date? = Date()
+    // Tool use. All optional, so chats saved before it still load.
+    /// An answer that asked for tools before going on.
+    var toolCalls: [ToolCall]? = nil
+    /// A tool step: the call it answers, the tool, what the model asked of it.
+    var toolCallID: String? = nil
+    var toolName: String? = nil
+    var toolArguments: String? = nil
+    var toolState: ToolState? = nil
+
+    /// A tool step that ended, so the model gets its text.
+    var isFinishedToolStep: Bool {
+        guard role == .tool, let toolState else { return false }
+        return toolState == .done || toolState == .failed || toolState == .declined
+    }
+
+    /// An answer that only asked for tools: the steps after it say what it did.
+    var isToolRequestOnly: Bool {
+        role == .assistant && toolCalls?.isEmpty == false && text.isEmpty && reasoning.isEmpty && !isError
+    }
+
+    var toolLabel: ToolLabel { ToolLabel(name: toolName ?? "a tool", arguments: toolArguments ?? "") }
+
+    /// The line a finished or stopped tool step shows in the chat.
+    var toolSummary: String {
+        let label = toolLabel
+        switch toolState {
+        case .done: return label.done
+        case .failed: return "Could not \(label.ask)"
+        case .declined: return "You did not allow it to \(label.ask)"
+        case .waitingForApproval, .running, nil: return "Stopped before it could \(label.ask)"
+        }
+    }
 }
 
 /// A saved chat as the list of chats shows it, without its messages.

@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.model) private var model = ""
     @AppStorage(SettingsKey.systemPrompt) private var systemPrompt = ""
     @AppStorage(SettingsKey.thinking) private var thinking = false
+    @AppStorage(SettingsKey.tools) private var tools = false
 
     @State private var testing = false
     @State private var testResult: TestResult?
@@ -26,6 +27,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     serverPanel
                     modelPanel
+                    toolsPanel
                     promptPanel
                 }
                 .padding(.horizontal, 16)
@@ -136,6 +138,69 @@ struct SettingsView: View {
                 note: "Thinks before it answers. Better answers, but much slower on a Pi.",
                 isOn: $thinking
             )
+        }
+    }
+
+    // MARK: Tools
+
+    private var toolsPanel: some View {
+        panel("Tools") {
+            SwitchRow(
+                title: "Web search and other tools",
+                note: "Lets the model use the tools your Pi offers, such as web search. Searches and the pages it reads go out to the internet; your chat stays on the Pi.",
+                isOn: $tools
+            )
+            if tools {
+                if store.serverTools.isEmpty {
+                    (Text("The Pi offers no tools yet. To add web search, run ")
+                        + Text("./web-search.sh on").font(Theme.mono(12))
+                        + Text(" on the Pi, then test the connection here."))
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if store.usableTools.isEmpty {
+                    Text("The Pi offers no tools the app can use.")
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(store.usableTools, id: \.tool) { tool in
+                        let row = Self.toolRow(tool)
+                        SwitchRow(
+                            title: row.title,
+                            note: row.note,
+                            isOn: Binding(get: { store.isSwitchedOn(tool) }, set: { store.setTool(tool.tool, on: $0) })
+                        )
+                    }
+                }
+                if store.alwaysAllowedTools.isEmpty {
+                    Text("Each tool asks before it runs. Choose “Always allow this tool” on a step to stop asking for that one.")
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    HStack(spacing: 8) {
+                        Text("Runs without asking: \(store.alwaysAllowedTools.formatted(.list(type: .and))).")
+                            .font(Theme.sans(12))
+                            .foregroundStyle(Theme.text3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Ask again") { store.askAgainForAllTools() }
+                            .buttonStyle(.ds(.secondary, height: 32))
+                    }
+                }
+            }
+        }
+    }
+
+    /// The switch for one tool. The Pi's web tools are on to begin with; a
+    /// tool from any other MCP server waits until the person switches it on.
+    private static func toolRow(_ tool: ServerTool) -> (title: String, note: String) {
+        switch tool.tool {
+        case "web_search": ("Web search", "Searches the web for what the model wants to know.")
+        case "web_fetch": ("Read web pages", "Reads a page the model picks, such as a search result.")
+        default: (tool.display_name ?? tool.tool,
+                  "From another MCP server on your Pi. The Pi can't tell what a tool does, so switch it on only if you trust it.")
         }
     }
 

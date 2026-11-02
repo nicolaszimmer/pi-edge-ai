@@ -1,0 +1,58 @@
+[
+  {
+    "display_name": "web_search",
+    "tool": "web_search",
+    "type": "mcp",
+    "permissions": {
+      "write": false
+    },
+    "uses_cwd": false,
+    "definition": {
+      "type": "function",
+      "function": {
+        "name": "web_search",
+        "description": "Search the web. Use it for news, recent events, prices, opening hours, or any fact you are not sure about. Returns titles, URLs and short snippets. To read a result in full, pass its URL to web_fetch.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search words, as you would type them into a search engine."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "display_name": "web_fetch",
+    "tool": "web_fetch",
+    "type": "mcp",
+    "permissions": {
+      "write": false
+    },
+    "uses_cwd": false,
+    "definition": {
+      "type": "function",
+      "function": {
+        "name": "web_fetch",
+        "description": "Read a web page and return its main text, shortened if it is long. Use it on a URL from web_search results or one the user gave you.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "Full http(s) URL of the page."
+            }
+          },
+          "required": [
+            "url"
+          ]
+        }
+      }
+    }
+  }
+]

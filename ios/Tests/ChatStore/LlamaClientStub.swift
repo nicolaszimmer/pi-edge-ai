@@ -1,19 +1,48 @@
 import Foundation
-/// Stand-in for LlamaClient: streams "one two three … ten" slowly.
+/// Stand-in for LlamaClient's networking (the types come from LlamaWire.swift):
+/// streams "one two three … ten" slowly, or asks for a tool when tests say so.
 struct LlamaClient: Sendable {
     let baseURL: URL
     let apiKey: String
-    struct ModelInfo: Decodable, Identifiable, Hashable, Sendable { let id: String }
-    struct Timings: Decodable, Sendable { let prompt_n: Int?; let prompt_per_second: Double?; let predicted_n: Int?; let predicted_per_second: Double? }
-    enum StreamEvent: Sendable { case content(String); case reasoning(String); case done(Timings?) }
-    struct WireMessage: Sendable { let role: String; let text: String; var imageJPEG: Data? = nil }
     nonisolated(unsafe) static var lastWire: [WireMessage] = []
-    static func normalizedBaseURL(_ raw: String) -> URL? { URL(string: raw) }
-    func models() async throws -> [ModelInfo] { [ModelInfo(id: "m")] }
-    func streamChat(model: String, messages: [WireMessage], thinking: Bool) -> AsyncThrowingStream<StreamEvent, Error> {
+    nonisolated(unsafe) static var lastTools: [JSONValue] = []
+    nonisolated(unsafe) static var requests = 0
+    /// What GET /tools lists.
+    nonisolated(unsafe) static var offered: [ServerTool] = []
+    /// The calls POST /tools ran.
+    nonisolated(unsafe) static var ran: [ToolCall] = []
+    /// With tools offered, the model asks for this tool instead of answering,
+    /// unless it has just had a tool's result (or `keepCalling` is set).
+    nonisolated(unsafe) static var asksFor: String? = nil
+    nonisolated(unsafe) static var keepCalling = false
+    /// How long the stream stays open after the tool call, before it ends.
+    nonisolated(unsafe) static var pauseAfterCalls: UInt64 = 0
+
+    func models() async throws -> [ModelInfo] { [ModelInfo(id: "m", status: nil)] }
+    func tools() async throws -> [ServerTool] { Self.offered }
+    func callTool(_ call: ToolCall) async throws -> (text: String, failed: Bool) {
+        Self.ran.append(call)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        return ("result for \(call.parameters["query"]?.string ?? "?")", false)
+    }
+    func streamChat(model: String, messages: [WireMessage], thinking: Bool, tools: [JSONValue] = []) -> AsyncThrowingStream<StreamEvent, Error> {
         Self.lastWire = messages
+        Self.lastTools = tools
+        Self.requests += 1
+        let round = Self.requests
+        let asks = Self.asksFor.flatMap { name in
+            !tools.isEmpty && (Self.keepCalling || messages.last?.role != "tool") ? name : nil
+        }
         return AsyncThrowingStream { c in
             let t = Task {
+                if let asks {
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                    c.yield(.toolCalls([ToolCall(id: "call-\(round)", name: asks, arguments: #"{"query":"q\#(round)"}"#)]))
+                    if Self.pauseAfterCalls > 0 { try? await Task.sleep(nanoseconds: Self.pauseAfterCalls) }
+                    c.yield(.done(nil))
+                    c.finish()
+                    return
+                }
                 for w in ["one", " two", " three", " four", " five", " six", " seven", " eight", " nine", " ten"] {
                     try? await Task.sleep(nanoseconds: 20_000_000)
                     if Task.isCancelled { c.finish(throwing: CancellationError()); return }
